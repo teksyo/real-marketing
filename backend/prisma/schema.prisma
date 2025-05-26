@@ -1,0 +1,59 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String
+  role      Role     @default(USER)
+  region    String
+  createdAt DateTime @default(now())
+  leads     Lead[]   // Relation to leads created by this user
+}
+
+model Lead {
+  id          Int           @id @default(autoincrement())
+  zid         String?       @unique  // Zillow ID for tracking and comparison
+  address     String?
+  price       String?
+  beds        String?
+  link        String?
+  zipCode     String
+  region      String        // State/Province (e.g., CA, TX)
+  status      String        @default("new")
+  contactFetchAttempts Int  @default(0)  // Track number of attempts to fetch contact info
+  createdAt   DateTime      @default(now())
+  contacts    Contact[]     // Relation to contacts (agents/brokers)
+  createdBy   User?        @relation(fields: [createdById], references: [id])
+  createdById Int?
+}
+
+model Contact {
+  id          Int      @id @default(autoincrement())
+  agentId     String?  @unique  // Zillow agent ID as unique identifier
+  name        String?  // Agent/Broker name
+  phoneNumber String   // Phone number
+  type        ContactType  // AGENT or BROKER
+  licenseNo   String?  // License number if available (e.g. DRE #)
+  company     String?  // Company/Brokerage name
+  leads       Lead[]   // Many-to-many relation with leads
+  createdAt   DateTime @default(now())
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum ContactType {
+  AGENT
+  BROKER
+}
