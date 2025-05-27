@@ -1,0 +1,39 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider             = "prisma-client-py"
+  recursive_type_depth = 5
+}
+
+model Lead {
+  id                   Int       @id @default(autoincrement())
+  zid                  String    @unique
+  address              String
+  price                String?
+  beds                 String?
+  link                 String?
+  zipCode              String
+  region               String
+  status               String    @default("new")
+  contactFetchAttempts Int       @default(0)
+  contacts             Contact[]
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+model Contact {
+  id          Int      @id @default(autoincrement())
+  agentId     String?  @unique
+  name        String?
+  phoneNumber String?
+  type        String   // AGENT or BROKER
+  licenseNo   String?
+  company     String?
+  leads       Lead[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+} 

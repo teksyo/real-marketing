@@ -29,37 +29,11 @@ from prisma import Prisma
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 import base64
-from urllib3.contrib import socks
-import socket
 import urllib3
 urllib3.disable_warnings()
 
 # Directory for storing debug data
 DATA_DIR = Path("zillow_data")
-
-# SOCKS5 proxy configuration
-PROXY_USERNAME = "user-sp6mbpcybk-session-1"
-PROXY_PASSWORD = "K40SClud=esN8jxg9c"
-PROXY_HOST = "gate.decodo.com"
-PROXY_PORT = 7000
-
-def setup_socks_proxy():
-    """Configure SOCKS5 proxy for all requests"""
-    def create_connection(address, timeout=None, source_address=None):
-        sock = socks.create_connection(
-            (address[0], address[1]),
-            proxy_type=socks.SOCKS5,
-            proxy_addr=PROXY_HOST,
-            proxy_port=PROXY_PORT,
-            proxy_username=PROXY_USERNAME,
-            proxy_password=PROXY_PASSWORD,
-            timeout=timeout,
-            source_address=source_address
-        )
-        return sock
-    
-    # Replace the default socket creator with our SOCKS-aware one
-    socket.create_connection = create_connection
 
 def get_us_map_bounds() -> Dict:
     """
@@ -483,7 +457,17 @@ async def update_missing_phone_numbers():
     finally:
         await db.disconnect()
 
-def get_headers():
+def get_user_agent():
+    """Return a random user agent string"""
+    user_agents = [
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
+    ]
+    return random.choice(user_agents)
+
+def get_request_headers():
     """Get headers that mimic a real browser"""
     return {
         'User-Agent': get_user_agent(),
@@ -496,10 +480,55 @@ def get_headers():
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-User': '?1',
-        'DNT': '1',
         'Pragma': 'no-cache',
         'Cache-Control': 'no-cache',
+        'DNT': '1',
+        'Sec-CH-UA': '"Google Chrome";v="119", "Chromium";v="119", "Not?A_Brand";v="24"',
+        'Sec-CH-UA-Mobile': '?0',
+        'Sec-CH-UA-Platform': '"macOS"'
     }
+
+# Proxy configuration
+PROXY_USERNAME = "user-sp6mbpcybk-session-1-state-us_virginia"
+PROXY_PASSWORD = "K40SClud=esN8jxg9c"
+PROXY_HOST = "gate.decodo.com"
+PROXY_PORT = 7000
+
+# Configure proxy with auth in the URL
+PROXY_URL = f"socks5h://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
+PROXIES = {
+    "http": PROXY_URL,
+    "https": PROXY_URL
+}
+
+def test_proxy_connection():
+    """Test if the proxy connection is working"""
+    print("Testing proxy connection...")
+    print(f"Using proxy: {PROXY_HOST}:{PROXY_PORT}")
+    try:
+        response = requests.get(
+            "https://ip.decodo.com/json",
+            proxies=PROXIES,
+            headers={'User-Agent': get_user_agent()},
+            verify=False,
+            timeout=30
+        )
+        if response.status_code == 200:
+            ip_data = response.json()
+            print(f"✅ Proxy connection successful!")
+            print(f"Current IP: {ip_data.get('proxy', {}).get('ip')}")
+            return True
+        else:
+            print(f"❌ Proxy test failed with status code: {response.status_code}")
+            print(f"Response content: {response.text}")
+            return False
+    except Exception as e:
+        print(f"❌ Proxy test failed with error: {str(e)}")
+        print("Please verify:")
+        print("1. Proxy credentials are correct")
+        print("2. Proxy server is running")
+        print("3. Your IP is whitelisted (if required)")
+        return False
 
 async def fetch_us_listings() -> bool:
     """Fetch listings across the continental US"""
@@ -536,143 +565,151 @@ async def fetch_us_listings() -> bool:
     
     try:
         with requests.Session() as session:
-            # Set default headers for all requests
-            session.headers.update(get_headers())
+            # Configure session
+            session.headers.update(get_request_headers())
+            session.verify = False
+            session.proxies = PROXIES
             
-            # First get the main page to get cookies
-            print("Getting initial cookies...")
-            session.get(base_url, timeout=30, verify=False)
+            # First visit the homepage to get cookies
+            print("Visiting homepage to get cookies...")
+            session.get("https://www.zillow.com/", timeout=30)
             
             # Add a delay to mimic human behavior
-            time.sleep(random.uniform(3, 7))
+            time.sleep(random.uniform(3, 5))
             
-            # Make the search request
+            # Now make the search request
             print("Making search request...")
-            for attempt in range(3):  # Try up to 3 times
-                try:
-                    response = session.get(
-                        base_url,
-                        params={"searchQueryState": json.dumps(search_params["searchQueryState"])},
-                        timeout=30,
-                        verify=False
-                    )
-                    
-                    print(f"Response status code: {response.status_code}")
-                    print(f"Response length: {len(response.text)} characters")
-                    
-                    # Save the HTML for debugging
-                    debug_file = DATA_DIR / f"debug_html_{timestamp}.html"
-                    with open(debug_file, "w", encoding="utf-8") as f:
-                        f.write(response.text)
-                    
-                    if response.status_code == 200:
-                        # Extract the search query state from the HTML
-                        search_data = None
-                        try:
-                            # Find the start of the searchResults object
-                            start_marker = '"searchResults":'
-                            start_pos = response.text.find(start_marker)
-                            
-                            if start_pos != -1:
-                                print("Found search results marker")
-                                # Find the start of the JSON object (skip whitespace)
-                                json_start = response.text.find('{', start_pos)
-                                if json_start != -1:
-                                    # Extract the complete JSON object
-                                    json_str = find_json_object(response.text, json_start)
-                                    if json_str:
-                                        print("Successfully extracted JSON object")
-                                        search_data = {"searchResults": json.loads(json_str)}
-                                        
-                                        # Save the raw extracted data for debugging
-                                        raw_file = DATA_DIR / f"zillow_raw_{timestamp}.json"
-                                        with open(raw_file, "w", encoding="utf-8") as f:
-                                            json.dump(search_data, f, indent=2)
-                                        
-                                        print("Successfully saved raw search data")
-                                        
-                                        # Process the search results
-                                        if 'searchResults' in search_data and 'listResults' in search_data['searchResults']:
-                                            results = search_data['searchResults']['listResults']
-                                            print(f"Found {len(results)} listings")
-                                            
-                                            # Process each listing
-                                            new_count = 0
-                                            existing_count = 0
-                                            error_count = 0
-                                            
-                                            for result in results:
-                                                try:
-                                                    # Get detailed listing info including contacts
-                                                    if result.get('detailUrl'):
-                                                        detail_html = fetch_listing_details(result['detailUrl'], session)
-                                                        if detail_html:
-                                                            contacts = extract_contact_info(detail_html)
-                                                            if contacts:
-                                                                result['contacts'] = contacts
-                                                    
-                                                    # Save to database
-                                                    status = await save_to_db(result)
-                                                    if status == "created":
-                                                        new_count += 1
-                                                    elif status == "exists":
-                                                        existing_count += 1
-                                                    else:
-                                                        error_count += 1
-                                                        
-                                                    # Add a delay between listings
-                                                    time.sleep(random.uniform(2, 5))
-                                                    
-                                                except Exception as e:
-                                                    print(f"Error processing listing {result.get('zpid', 'unknown')}: {str(e)}")
-                                                    error_count += 1
-                                                    continue
-                                            
-                                            print(f"\nListing fetch summary:")
-                                            print(f"- Total listings found: {len(results)}")
-                                            print(f"- New leads: {new_count}")
-                                            print(f"- Already exists: {existing_count}")
-                                            print(f"- Errors: {error_count}")
-                                            return True
-                                        else:
-                                            print("No search results found in the data")
-                                else:
-                                    print("Could not find start of JSON object")
-                            else:
-                                print("Could not find search results in the response")
+            response = session.get(
+                base_url,
+                params={"searchQueryState": json.dumps(search_params["searchQueryState"])},
+                timeout=30
+            )
+            
+            # Save the HTML for debugging if needed
+            debug_file = DATA_DIR / f"debug_html_{timestamp}.html"
+            with open(debug_file, "w", encoding="utf-8") as f:
+                f.write(response.text)
+            
+            print(f"Response status code: {response.status_code}")
+            print(f"Response length: {len(response.text)} characters")
+            
+            # Extract the search query state from the HTML
+            search_data = None 
+            try:
+                # Find the start of the searchResults object
+                start_marker = '"searchResults":'
+                start_pos = response.text.find(start_marker)
+                
+                if start_pos != -1:
+                    print("Found search results marker")
+                    # Find the start of the JSON object (skip whitespace)
+                    json_start = response.text.find('{', start_pos)
+                    if json_start != -1:
+                        # Extract the complete JSON object
+                        json_str = find_json_object(response.text, json_start)
+                        if json_str:
+                            print("Successfully extracted JSON object")
+                            try:
+                                search_data = {"searchResults": json.loads(json_str)}
                                 
-                            if attempt < 2:  # If not the last attempt
-                                print(f"Retrying... (attempt {attempt + 2}/3)")
-                                time.sleep(random.uniform(10, 15))  # Longer delay between retries
-                                continue
-                            return False
-                            
-                        except Exception as e:
-                            print(f"Error extracting data from HTML: {e}")
-                            if attempt < 2:  # If not the last attempt
-                                print(f"Retrying... (attempt {attempt + 2}/3)")
-                                time.sleep(random.uniform(10, 15))  # Longer delay between retries
-                                continue
+                                # Save the raw extracted data for debugging
+                                raw_file = DATA_DIR / f"zillow_raw_{timestamp}.json"
+                                with open(raw_file, "w", encoding="utf-8") as f:
+                                    json.dump(search_data, f, indent=2)
+                                
+                                print("Successfully saved raw search data")
+                                
+                                # Process the search results
+                                if 'searchResults' in search_data and 'listResults' in search_data['searchResults']:
+                                    results = search_data['searchResults']['listResults']
+                                    print(f"Found {len(results)} listings")
+                                    
+                                    # Process each listing
+                                    new_count = 0
+                                    existing_count = 0
+                                    error_count = 0
+                                    
+                                    for result in results:
+                                        try:
+                                            # Get detailed listing info including contacts
+                                            if result.get('detailUrl'):
+                                                detail_html = fetch_listing_details(result['detailUrl'])
+                                                if detail_html:
+                                                    contacts = extract_contact_info(detail_html)
+                                                    if contacts:
+                                                        result['contacts'] = contacts
+                                        
+                                            # Save to database
+                                            status = await save_to_db(result)
+                                            if status == "created":
+                                                new_count += 1
+                                            elif status == "exists":
+                                                existing_count += 1
+                                            else:
+                                                error_count += 1
+                                                
+                                            # Add a delay between listings
+                                            time.sleep(random.uniform(1, 3))
+                                            
+                                        except Exception as e:
+                                            print(f"Error processing listing {result.get('zpid', 'unknown')}: {str(e)}")
+                                            error_count += 1
+                                            continue
+                                    
+                                    print(f"\nListing fetch summary:")
+                                    print(f"- Total listings found: {len(results)}")
+                                    print(f"- New leads: {new_count}")
+                                    print(f"- Already exists: {existing_count}")
+                                    print(f"- Errors: {error_count}")
+                                    return True
+                                else:
+                                    print("No search results found in the data")
+                                    return False
+                                    
+                            except json.JSONDecodeError as e:
+                                print(f"Error parsing search data JSON: {e}")
+                                return False
+                        else:
+                            print("Could not find complete JSON object")
                             return False
                     else:
-                        print(f"Request failed with status code: {response.status_code}")
-                        if attempt < 2:  # If not the last attempt
-                            print(f"Retrying... (attempt {attempt + 2}/3)")
-                            time.sleep(random.uniform(10, 15))  # Longer delay between retries
-                            continue
+                        print("Could not find start of JSON object")
                         return False
-                        
-                except Exception as e:
-                    print(f"Error during request: {str(e)}")
-                    if attempt < 2:  # If not the last attempt
-                        print(f"Retrying... (attempt {attempt + 2}/3)")
-                        time.sleep(random.uniform(10, 15))  # Longer delay between retries
-                        continue
+                else:
+                    print("Could not find search results in the response")
                     return False
-                    
+            
+            except Exception as e:
+                print(f"Error extracting data from HTML: {e}")
+                return False
+                
     except Exception as e:
         print(f"Error fetching US listings: {str(e)}")
         return False
+
+async def main():
+    parser = argparse.ArgumentParser(description='Fetch Zillow listings across the US')
+    parser.add_argument('--skip-fetch', action='store_true', help='Skip fetching new listings')
+    parser.add_argument('--skip-contacts', action='store_true', help='Skip updating contact information')
+    args = parser.parse_args()
+    
+    ensure_data_directory()
+    
+    # Test proxy connection
+    if not test_proxy_connection():
+        print("Failed to establish proxy connection. Exiting...")
+        return
+    
+    if not args.skip_fetch:
+        print("Fetching listings across the US...")
+        success = await fetch_us_listings()
+        if not success:
+            print("Failed to fetch listings")
+            return
+    
+    if not args.skip_contacts:
+        print("Updating contact information for leads...")
+        await update_missing_phone_numbers()
 
 def find_json_object(text, start_pos):
     """
@@ -702,92 +739,29 @@ def find_json_object(text, start_pos):
     
     return None
 
-# Proxy configuration
-# PROXY_USERNAME = "sp6mbpcybk"
-# PROXY_PASSWORD = "K40SClud=esN8jxg9c"
-# PROXY_HOST = "gate.decodo.com"
-# PROXY_PORT = "10001"
-
-# Configure proxy with auth in the URL
-# PROXY_URL = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
-PROXIES = None
-# PROXIES = {
-#     "http": PROXY_URL,
-#     "https": PROXY_URL
-# }
-
-def get_user_agent():
-    """Return a random user agent string"""
-    user_agents = [
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
-    ]
-    return random.choice(user_agents)
-
-def test_proxy_connection():
-    """Test if the proxy connection is working"""
-    print("Testing proxy connection...")
-    try:
-        response = requests.get(
-            "https://ip.decodo.com/json",
-            headers={'User-Agent': get_user_agent()},
-            verify=False,
-            timeout=30
-        )
-        if response.status_code == 200:
-            ip_data = response.json()
-            print(f"✅ Proxy connection successful!")
-            print(f"Current IP: {ip_data.get('proxy', {}).get('ip')}")
-            return True
-        else:
-            print(f"❌ Proxy test failed with status code: {response.status_code}")
-            print(f"Response content: {response.text}")
-            return False
-    except Exception as e:
-        print(f"❌ Proxy test failed with error: {str(e)}")
-        return False
-
-def fetch_listing_details(detail_url, session=None):
+def fetch_listing_details(detail_url):
     """
     Fetch detailed information for a single listing
     """
     print(f"Fetching details for: {detail_url}")
     
-    if session is None:
-        session = requests.Session()
-        session.headers.update(get_headers())
-    
     try:
         # Add a random delay between requests
-        time.sleep(random.uniform(2, 5))
+        time.sleep(random.uniform(3, 7))
         
-        for attempt in range(3):  # Try up to 3 times
-            try:
-                response = session.get(
-                    detail_url,
-                    timeout=30,
-                    verify=False
-                )
-                
-                if response.status_code == 200:
-                    return response.text
-                else:
-                    print(f"Failed to fetch details. Status code: {response.status_code}")
-                    if attempt < 2:  # If not the last attempt
-                        print(f"Retrying... (attempt {attempt + 2}/3)")
-                        time.sleep(random.uniform(5, 10))  # Longer delay between retries
-                        continue
-                    return None
-                    
-            except Exception as e:
-                print(f"Error during request: {str(e)}")
-                if attempt < 2:  # If not the last attempt
-                    print(f"Retrying... (attempt {attempt + 2}/3)")
-                    time.sleep(random.uniform(5, 10))  # Longer delay between retries
-                    continue
-                return None
+        response = requests.get(
+            detail_url,
+            headers=get_request_headers(),
+            proxies=PROXIES,
+            verify=False,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            return response.text
+        else:
+            print(f"Failed to fetch details. Status code: {response.status_code}")
+            return None
             
     except Exception as e:
         print(f"Error fetching listing details: {str(e)}")
@@ -796,33 +770,6 @@ def fetch_listing_details(detail_url, session=None):
 def ensure_data_directory():
     """Ensure the data directory exists"""
     DATA_DIR.mkdir(exist_ok=True)
-
-async def main():
-    parser = argparse.ArgumentParser(description='Fetch Zillow listings across the US')
-    parser.add_argument('--skip-fetch', action='store_true', help='Skip fetching new listings')
-    parser.add_argument('--skip-contacts', action='store_true', help='Skip updating contact information')
-    args = parser.parse_args()
-    
-    ensure_data_directory()
-    
-    # Setup SOCKS proxy
-    setup_socks_proxy()
-    
-    # Test proxy connection
-    if not test_proxy_connection():
-        print("Failed to establish proxy connection. Please check your proxy settings.")
-        return
-    
-    if not args.skip_fetch:
-        print("Fetching listings across the US...")
-        success = await fetch_us_listings()
-        if not success:
-            print("Failed to fetch listings")
-            return
-    
-    if not args.skip_contacts:
-        print("Updating contact information for leads...")
-        await update_missing_phone_numbers()
 
 if __name__ == "__main__":
     asyncio.run(main())
