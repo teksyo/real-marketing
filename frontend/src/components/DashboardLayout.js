@@ -3,10 +3,21 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { HomeIcon, UserIcon, Bars3Icon, XMarkIcon } from '@heroicons/react/24/outline';
+import { 
+  HomeIcon, 
+  UserIcon, 
+  CalendarDaysIcon, 
+  UsersIcon,
+  ChatBubbleLeftRightIcon,
+  Bars3Icon, 
+  XMarkIcon 
+} from '@heroicons/react/24/outline';
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: HomeIcon },
+  { name: 'Leads', href: '/leads', icon: UsersIcon },
+  { name: 'SMS', href: '/sms', icon: ChatBubbleLeftRightIcon },
+  { name: 'Appointments', href: '/appointments', icon: CalendarDaysIcon },
   { name: 'My Account', href: '/my-account', icon: UserIcon },
 ];
 

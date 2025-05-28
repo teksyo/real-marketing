@@ -157,17 +157,13 @@ const USAMap = ({ onRegionSelect }) => {
       const fullStateName = clickedFeature.properties?.STATE_NAME;
       const stateAbbr = stateAbbreviations[fullStateName];
       
-      // Log for debugging
-      console.log('Clicked state:', fullStateName);
-      console.log('State abbreviation:', stateAbbr);
-      
       if (stateAbbr && stateZipCodes[stateAbbr]) {
         onRegionSelect({
           name: stateAbbr, // Using abbreviation instead of full name
           zip: stateZipCodes[stateAbbr],
           state: stateAbbr
         });
-      } else {
+      } else if (typeof window !== 'undefined') {
         console.warn('Invalid state or no ZIP code mapping found:', fullStateName);
       }
     }

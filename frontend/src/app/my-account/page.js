@@ -6,8 +6,7 @@ import toast from 'react-hot-toast';
 import DashboardLayout from '@/components/DashboardLayout';
 import Input from '@/components/Input';
 import Button from '@/components/Button';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL;
+import { API_URL } from '@/utils/api';
 
 export default function MyAccount() {
   const [formData, setFormData] = useState({
