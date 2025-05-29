@@ -107,7 +107,7 @@ async def save_to_db(listing: Dict) -> str:
             'link': listing.get('detailUrl', ''),
             'zipCode': listing.get('addressZipcode', ''),
             'region': f"{listing.get('addressCity', '')}, {listing.get('addressState', '')}",
-            'status': 'new',
+            'status': 'NEW',
             'contactFetchAttempts': 0
         }
         
@@ -185,6 +185,11 @@ async def update_missing_phone_numbers() -> None:
                 contacts_to_create = []
                 if isinstance(detail_data, dict) and 'contacts' in detail_data:
                     for contact_data in detail_data['contacts']:
+                        # Skip contacts without phone numbers since it's required
+                        phone_number = contact_data.get('phoneNumber')
+                        if not phone_number:
+                            continue
+                            
                         # Check if contact already exists
                         agent_id = contact_data.get('agentId')
                         if agent_id:
@@ -213,8 +218,8 @@ async def update_missing_phone_numbers() -> None:
                         contact = {
                             'agentId': contact_data.get('agentId'),
                             'name': contact_data.get('name'),
-                            'phoneNumber': contact_data.get('phoneNumber'),
-                            'type': contact_data.get('type', 'AGENT'),
+                            'phoneNumber': phone_number,
+                            'type': 'AGENT' if contact_data.get('type', 'AGENT') == 'AGENT' else 'BROKER',
                             'licenseNo': contact_data.get('licenseNo'),
                             'company': contact_data.get('company'),
                             'leads': {

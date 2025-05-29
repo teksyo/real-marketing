@@ -1,39 +1,189 @@
+generator client {
+  provider = "prisma-client-py"
+}
+
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
-generator client {
-  provider             = "prisma-client-py"
-  recursive_type_depth = 5
+model User {
+  id               Int               @id @default(autoincrement())
+  email            String            @unique
+  password         String
+  role             Role              @default(USER)
+  region           String
+  phoneNumber      String?
+  createdAt        DateTime          @default(now())
+  appointments     Appointment[]
+  leads            Lead[]
+  smsConversations SmsConversation[]
+  leadActivities   LeadActivity[]
 }
 
 model Lead {
-  id                   Int       @id @default(autoincrement())
-  zid                  String    @unique
-  address              String
+  id                   Int               @id @default(autoincrement())
+  address              String?
   price                String?
   beds                 String?
   link                 String?
   zipCode              String
+  status               LeadStatus        @default(NEW)
+  priority             LeadPriority      @default(MEDIUM)
+  source               LeadSource        @default(ZILLOW)
+  lastContactDate      DateTime?
+  nextFollowUpDate     DateTime?
+  notes                String?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  zid                  String?           @unique
   region               String
-  status               String    @default("new")
-  contactFetchAttempts Int       @default(0)
-  contacts             Contact[]
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  contactFetchAttempts Int               @default(0)
+  createdById          Int?
+  appointments         Appointment[]
+  createdBy            User?             @relation(fields: [createdById], references: [id])
+  contacts             Contact[]         @relation("ContactToLead")
+  smsConversations     SmsConversation[]
+  leadActivities       LeadActivity[]
 }
 
 model Contact {
-  id          Int      @id @default(autoincrement())
-  agentId     String?  @unique
+  id          Int         @id @default(autoincrement())
+  agentId     String?     @unique
   name        String?
-  phoneNumber String?
-  type        String   // AGENT or BROKER
+  phoneNumber String
+  type        ContactType
   licenseNo   String?
   company     String?
-  leads       Lead[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime    @default(now())
+  leads       Lead[]      @relation("ContactToLead")
+}
+
+model Appointment {
+  id          Int               @id @default(autoincrement())
+  title       String
+  description String?
+  datetime    DateTime
+  location    String?
+  status      AppointmentStatus @default(SCHEDULED)
+  notes       String?
+  leadId      Int?
+  createdById Int
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  createdBy   User              @relation(fields: [createdById], references: [id])
+  lead        Lead?             @relation(fields: [leadId], references: [id])
+}
+
+model SmsConversation {
+  id          Int          @id @default(autoincrement())
+  leadId      Int
+  userId      Int
+  phoneNumber String
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  lead        Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id])
+  messages    SmsMessage[]
+
+  @@unique([leadId, phoneNumber])
+}
+
+model SmsMessage {
+  id             Int               @id @default(autoincrement())
+  conversationId Int
+  direction      MessageDirection
+  content        String
+  status         MessageStatus     @default(PENDING)
+  phoneNumber    String
+  createdAt      DateTime          @default(now())
+  sentAt         DateTime?
+  deliveredAt    DateTime?
+  errorMessage   String?
+  conversation   SmsConversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model LeadActivity {
+  id          Int          @id @default(autoincrement())
+  leadId      Int
+  userId      Int
+  type        ActivityType
+  description String
+  metadata    Json?
+  createdAt   DateTime     @default(now())
+  lead        Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id])
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum ContactType {
+  AGENT
+  BROKER
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELED
+  RESCHEDULED
+  NO_SHOW
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  INTERESTED
+  NOT_INTERESTED
+  QUALIFIED
+  UNQUALIFIED
+  CONVERTED
+  CLOSED_LOST
+}
+
+enum LeadPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum LeadSource {
+  ZILLOW
+  MANUAL
+  REFERRAL
+  WEBSITE
+  SOCIAL_MEDIA
+  OTHER
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  FAILED
+  READ
+}
+
+enum ActivityType {
+  SMS_SENT
+  SMS_RECEIVED
+  APPOINTMENT_SCHEDULED
+  APPOINTMENT_COMPLETED
+  STATUS_CHANGED
+  NOTE_ADDED
+  CALL_MADE
+  EMAIL_SENT
+  FOLLOW_UP_SCHEDULED
+  LEAD_CREATED
 } 
