@@ -21,7 +21,7 @@ from typing import List, Dict, Optional
 from prisma import Prisma
 from prisma.enums import ContactType
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Initialize Prisma client
 prisma = Prisma()
@@ -36,6 +36,9 @@ MAX_DELAY = 7  # Maximum delay between requests (seconds)
 BATCH_SIZE = 10  # Process leads in batches
 BATCH_DELAY = 30  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Maximum retries for failed requests
+
+# Time limits for cron jobs
+MAX_RUNTIME_MINUTES = 12  # Maximum runtime for cron jobs (12 minutes)
 
 def get_scraperapi_url(target_url: str, **kwargs) -> str:
     """
@@ -290,6 +293,9 @@ async def process_zillow_leads():
     """
     Main function to process Zillow leads without contact information
     """
+    start_time = datetime.now()
+    max_end_time = start_time + timedelta(minutes=MAX_RUNTIME_MINUTES)
+    
     try:
         # Get leads without contacts
         leads = await prisma.lead.find_many(
@@ -305,7 +311,7 @@ async def process_zillow_leads():
                     'not': None  # Must have a link
                 }
             },
-            take=50  # Limit to 50 leads per run
+            take=15  # Reduced from 50 to 15 for faster cron jobs
         )
         
         if not leads:
@@ -314,6 +320,7 @@ async def process_zillow_leads():
             
         print(f"\n🏠 Processing {len(leads)} Zillow leads for contact information...")
         print(f"📊 Processing in batches of {BATCH_SIZE}")
+        print(f"⏰ Max runtime: {MAX_RUNTIME_MINUTES} minutes")
         
         total_contacts_created = 0
         total_processed = 0
@@ -323,10 +330,23 @@ async def process_zillow_leads():
         total_batches = (len(leads) + BATCH_SIZE - 1) // BATCH_SIZE
         
         for batch_num, i in enumerate(range(0, len(leads), BATCH_SIZE)):
+            # Check if we're approaching timeout
+            current_time = datetime.now()
+            if current_time >= max_end_time:
+                print(f"\n⏰ Approaching timeout limit ({MAX_RUNTIME_MINUTES} minutes)")
+                print(f"Stopping early to avoid cron job timeout")
+                break
+                
             batch = leads[i:i + BATCH_SIZE]
             print(f"\n📦 Processing batch {batch_num + 1}/{total_batches} ({len(batch)} leads)")
             
             for lead_num, lead in enumerate(batch):
+                # Check timeout before each lead
+                current_time = datetime.now()
+                if current_time >= max_end_time:
+                    print(f"\n⏰ Timeout reached, stopping processing")
+                    break
+                    
                 try:
                     total_processed += 1
                     print(f"\n🔍 Lead {total_processed}/{len(leads)} - ID: {lead.zid}")
@@ -368,14 +388,19 @@ async def process_zillow_leads():
             
             # Delay between batches
             if batch_num < total_batches - 1:
-                print(f"\n⏱️  Batch {batch_num + 1} complete. Waiting {BATCH_DELAY} seconds before next batch...")
-                time.sleep(BATCH_DELAY)
+                current_time = datetime.now()
+                if current_time < max_end_time:
+                    print(f"\n⏱️  Batch {batch_num + 1} complete. Waiting {BATCH_DELAY} seconds before next batch...")
+                    time.sleep(BATCH_DELAY)
         
+        runtime = datetime.now() - start_time
         print(f"\n📊 Final Summary:")
+        print(f"- Runtime: {runtime.total_seconds()/60:.1f} minutes")
         print(f"- Total leads processed: {total_processed}")
         print(f"- Total contacts created: {total_contacts_created}")
         print(f"- Total errors: {total_errors}")
-        print(f"- Success rate: {((total_processed - total_errors) / total_processed * 100):.1f}%")
+        if total_processed > 0:
+            print(f"- Success rate: {((total_processed - total_errors) / total_processed * 100):.1f}%")
         
     except Exception as e:
         print(f"❌ Error in main process: {str(e)}")
