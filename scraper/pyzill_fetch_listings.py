@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
 """
-Zillow listings scraper that collects listings across the US
-and extracts detailed contact information for agents and brokers.
+Zillow listings scraper that collects listings across the US.
 
 Usage:
 # Fetch all listings across US
 python3.10 pyzill_fetch_listings.py
-
-# Only update contact information for existing leads
-python3.10 pyzill_fetch_listings.py --skip-fetch
-
-# Only fetch new listings (skip contact updates)
-python3.10 pyzill_fetch_listings.py --skip-contacts
 """
 import json
 import time
@@ -156,190 +149,78 @@ async def save_to_db(listing: Dict) -> tuple[str, Optional[int]]:
         print(f"Error saving listing to database: {str(e)}")
         return "error", None
 
-async def update_missing_phone_numbers() -> None:
-    """Update contact information for listings without phone numbers"""
-    try:        
-        # Get leads without contacts
-        leads = await prisma.lead.find_many(
-            where={
-                'contacts': {
-                    'none': {}  # No contacts associated
-                },
-                'contactFetchAttempts': {
-                    'lt': 3  # Less than 3 attempts
-                }
-            }
-        )
+async def extract_contact_from_listing(listing: Dict, lead_id: int) -> Optional[Dict]:
+    """Extract basic contact information from listing data if available"""
+    try:
+        contact_info = {}
         
-        if not leads:
-            print("No leads need contact updates")
-            return
+        # Try to get broker/agent name from basic listing data
+        if 'brokerName' in listing and listing['brokerName']:
+            contact_info['company'] = listing['brokerName']
+            contact_info['name'] = listing['brokerName']
+        
+        # Try to get basic agent info that might be in listing
+        for field in ['agentName', 'listingAgentName', 'contactName']:
+            if field in listing and listing[field]:
+                contact_info['name'] = listing[field]
+                break
+        
+        # Try to get phone number if available in basic listing
+        phone_fields = ['phoneNumber', 'agentPhoneNumber', 'contactPhone', 'phone']
+        for field in phone_fields:
+            if field in listing and listing[field]:
+                contact_info['phoneNumber'] = listing[field]
+                break
+        
+        # Try to get agent ID
+        agent_id_fields = ['agentId', 'listingAgentId', 'contactId']
+        for field in agent_id_fields:
+            if field in listing and listing[field]:
+                contact_info['agentId'] = str(listing[field])
+                break
+        
+        # Only create contact if we have meaningful contact info
+        if not contact_info.get('phoneNumber') and not contact_info.get('name'):
+            return None
+        
+        # If we have a name but no phone, create with placeholder
+        if not contact_info.get('phoneNumber') and contact_info.get('name'):
+            contact_info['phoneNumber'] = "000-000-0000"  # Placeholder
             
-        print(f"\nUpdating contact information for {len(leads)} leads...")
-        updated = 0
-        errors = 0
+        # Check if contact already exists by agentId
+        if contact_info.get('agentId'):
+            existing_contact = await prisma.contact.find_unique(
+                where={'agentId': contact_info['agentId']}
+            )
+            if existing_contact:
+                # Connect existing contact to lead
+                await prisma.lead.update(
+                    where={'id': lead_id},
+                    data={'contacts': {'connect': {'id': existing_contact.id}}}
+                )
+                return existing_contact.__dict__
         
-        # Process leads in batches to reduce rate limiting issues
-        total_batches = (len(leads) + BATCH_SIZE - 1) // BATCH_SIZE
+        # Create new contact
+        new_contact_data = {
+            'agentId': contact_info.get('agentId'),
+            'name': contact_info.get('name'),
+            'phoneNumber': contact_info['phoneNumber'],
+            'type': ContactType.AGENT,
+            'company': contact_info.get('company'),
+            'leads': {'connect': {'id': lead_id}}
+        }
         
-        for batch_num, i in enumerate(range(0, len(leads), BATCH_SIZE)):
-            batch = leads[i:i + BATCH_SIZE]
-            print(f"\n📦 Processing batch {batch_num + 1}/{total_batches} ({len(batch)} leads)")
-            
-            for lead_num, lead in enumerate(batch):
-                try:
-                    print(f"\n🔍 Processing lead {i + lead_num + 1}/{len(leads)} (Batch {batch_num + 1}, Lead {lead_num + 1}/{len(batch)})")
-                    print(f"   Lead ID: {lead.zid}")
-                    
-                    if not lead.link:
-                        print(f"   ❌ No URL for lead {lead.zid}, skipping...")
-                        errors += 1
-                        continue
-                    
-                    # Increment contact fetch attempts first
-                    await prisma.lead.update(
-                        where={
-                            'id': lead.id
-                        },
-                        data={
-                            'contactFetchAttempts': lead.contactFetchAttempts + 1
-                        }
-                    )
-                    
-                    # Use improved retry function
-                    detail_data = await fetch_listing_details_with_retry(lead.link)
-                    
-                    if not detail_data:
-                        print(f"   ❌ No detail data for lead {lead.zid}")
-                        errors += 1
-                        continue
-                    
-                    # Phone number patterns
-                    phone_patterns = [
-                        r'\b\d{3}-\d{3}-\d{4}\b',  # xxx-xxx-xxxx
-                        r'\b\d{3}\.\d{3}\.\d{4}\b',  # xxx.xxx.xxxx
-                        r'\b\(\d{3}\)\s*\d{3}-\d{4}\b',  # (xxx) xxx-xxxx
-                        r'\b\(\d{3}\)\s*\d{3}\s*\d{4}\b',  # (xxx) xxx xxxx
-                        r'\b\d{3}\s*\d{3}\s*\d{4}\b',  # xxx xxx xxxx
-                    ]
-                    
-                    # Try to get contacts from pyzill response
-                    contacts_to_create = []
-                    if isinstance(detail_data, dict) and 'contacts' in detail_data:
-                        print(f"   📞 Found {len(detail_data['contacts'])} contacts in API response")
-                        for contact_data in detail_data['contacts']:
-                            # Skip contacts without phone numbers since it's required
-                            phone_number = contact_data.get('phoneNumber')
-                            if not phone_number:
-                                continue
-                                
-                            # Check if contact already exists
-                            agent_id = contact_data.get('agentId')
-                            if agent_id:
-                                existing_contact = await prisma.contact.find_unique(
-                                    where={
-                                        'agentId': agent_id
-                                    }
-                                )
-                                if existing_contact:
-                                    # Connect existing contact to lead
-                                    await prisma.lead.update(
-                                        where={
-                                            'id': lead.id
-                                        },
-                                        data={
-                                            'contacts': {
-                                                'connect': {
-                                                    'id': existing_contact.id
-                                                }
-                                            }
-                                        }
-                                    )
-                                    continue
-                            
-                            # Create new contact
-                            contact = {
-                                'agentId': contact_data.get('agentId'),
-                                'name': contact_data.get('name'),
-                                'phoneNumber': phone_number,
-                                'type': ContactType.AGENT if contact_data.get('type', 'AGENT') == 'AGENT' else ContactType.BROKER,
-                                'licenseNo': contact_data.get('licenseNo'),
-                                'company': contact_data.get('company'),
-                                'leads': {
-                                    'connect': {
-                                        'id': lead.id
-                                    }
-                                }
-                            }
-                            contacts_to_create.append(contact)
-                    
-                    # If no contacts found in pyzill response, try regex on raw HTML
-                    if not contacts_to_create and 'raw_html' in detail_data:
-                        print(f"   🔍 No API contacts found, searching HTML for phone numbers...")
-                        html_content = detail_data['raw_html']
-                        phone_numbers = set()
-                        for pattern in phone_patterns:
-                            matches = re.findall(pattern, html_content)
-                            for match in matches:
-                                # Clean and format the phone number consistently
-                                phone = re.sub(r'[^\d]', '', match)
-                                if len(phone) >= 10:  # Ensure we have at least a full phone number
-                                    phone_numbers.add(f"({phone[:3]}) {phone[3:6]}-{phone[6:10]}")
-                        
-                        if phone_numbers:
-                            print(f"   📞 Found {len(phone_numbers)} phone numbers in HTML")
-                            # Create a generic contact for each phone number
-                            for phone in phone_numbers:
-                                contact = {
-                                    'phoneNumber': phone,
-                                    'type': ContactType.AGENT,
-                                    'leads': {
-                                        'connect': {
-                                            'id': lead.id
-                                        }
-                                    }
-                                }
-                                contacts_to_create.append(contact)
-                    
-                    # Create all new contacts
-                    for contact in contacts_to_create:
-                        await prisma.contact.create(data=contact)
-                    
-                    if contacts_to_create:
-                        updated += 1
-                        print(f"   ✅ Created {len(contacts_to_create)} contacts for lead {lead.zid}")
-                    else:
-                        print(f"   ❌ No contacts found for lead {lead.zid}")
-                        errors += 1
-                    
-                    # Add delay between individual requests within a batch
-                    if lead_num < len(batch) - 1:  # Don't delay after the last item in batch
-                        delay = random.uniform(MIN_DELAY, MAX_DELAY)
-                        print(f"   ⏱️  Waiting {delay:.1f} seconds before next request...")
-                        time.sleep(delay)
-                    
-                except Exception as e:
-                    print(f"   ❌ Error updating contact info for lead {lead.zid}: {str(e)}")
-                    errors += 1
-                    continue
-            
-            # Add longer delay between batches
-            if batch_num < total_batches - 1:  # Don't delay after the last batch
-                print(f"\n⏱️  Batch {batch_num + 1} complete. Waiting {BATCH_DELAY} seconds before next batch...")
-                time.sleep(BATCH_DELAY)
+        # Remove None values
+        new_contact_data = {k: v for k, v in new_contact_data.items() if v is not None}
         
-        print(f"\nContact update summary:")
-        print(f"- Total leads processed: {len(leads)}")
-        print(f"- Successfully updated: {updated}")
-        print(f"- Errors: {errors}")
+        new_contact = await prisma.contact.create(data=new_contact_data)
+        return new_contact.__dict__
         
     except Exception as e:
-        if "prepared statement" in str(e):
-            print("Skipping contact updates due to database connection issue (prepared statement conflict)")
-        else:
-            print(f"Error updating contact information: {str(e)}")
+        print(f"Error extracting contact from listing: {str(e)}")
+        return None
 
-async def fetch_us_listings() -> bool:
+async def fetch_us_listings(skip_contacts: bool = False) -> bool:
     """Fetch listings across the continental US"""
     print("\nFetching newest listings across US...")
     
@@ -439,8 +320,8 @@ async def fetch_us_listings() -> bool:
                     new_count += 1
                     print(f"✅ Created new listing {idx+1}/{len(results)} (ID: {lead_id})")
                     
-                    # Extract contact information from the listing
-                    if lead_id:
+                    # Extract contact information if not skipping and we have a lead ID
+                    if not skip_contacts and lead_id:
                         contact = await extract_contact_from_listing(result, lead_id)
                         if contact:
                             contacts_created += 1
@@ -453,7 +334,7 @@ async def fetch_us_listings() -> bool:
                     print(f"📄 Listing already exists {idx+1}/{len(results)}")
                     
                     # Still try to extract contact for existing leads that might not have contacts
-                    if lead_id:
+                    if not skip_contacts and lead_id:
                         contact = await extract_contact_from_listing(result, lead_id)
                         if contact:
                             contacts_created += 1
@@ -471,7 +352,10 @@ async def fetch_us_listings() -> bool:
         print(f"- Total listings found: {len(results)}")
         print(f"- New leads: {new_count}")
         print(f"- Already exists: {existing_count}")
-        print(f"- Contacts created: {contacts_created}")
+        if not skip_contacts:
+            print(f"- Contacts created: {contacts_created}")
+        else:
+            print(f"- Contact extraction: SKIPPED")
         print(f"- Errors: {error_count}")
         return True
                 
@@ -482,7 +366,7 @@ async def fetch_us_listings() -> bool:
 async def main():
     parser = argparse.ArgumentParser(description='Fetch Zillow listings across the US')
     parser.add_argument('--skip-fetch', action='store_true', help='Skip fetching new listings')
-    parser.add_argument('--skip-contacts', action='store_true', help='Skip updating contact information (DEPRECATED - contacts are now extracted from listings)')
+    parser.add_argument('--skip-contacts', action='store_true', help='Skip extracting contact information from listings')
     args = parser.parse_args()
     
     ensure_data_directory()
@@ -498,22 +382,15 @@ async def main():
     try:
         if not args.skip_fetch:
             print("Fetching listings across the US...")
-            success = await fetch_us_listings()
+            if args.skip_contacts:
+                print("⚠️  Contact extraction will be SKIPPED - use scraper_api_contacts.py for detailed phone numbers")
+            success = await fetch_us_listings(skip_contacts=args.skip_contacts)
             if not success:
                 print("Failed to fetch listings")
                 return
         else:
             print("Skipping listing fetch as requested.")
         
-        # Note: Contact extraction is now integrated into the listing fetch
-        if not args.skip_contacts and args.skip_fetch:
-            print("\n⚠️  NOTE: --skip-contacts is deprecated!")
-            print("Contact information is now extracted directly from listings during fetch.")
-            print("To update contacts for existing leads, use the legacy contact update function...")
-            
-            # Keep the old contact update function available for existing leads
-            await update_missing_phone_numbers()
-            
     finally:
         await prisma.disconnect()
 
@@ -570,143 +447,6 @@ async def fetch_listing_details_with_retry(url: str, max_retries: int = MAX_RETR
     
     print(f"❌ Failed to fetch data after {max_retries} attempts")
     return None
-
-async def extract_contact_from_listing(listing: Dict, lead_id: int) -> Optional[Dict]:
-    """Extract contact information from listing data and create contact if needed"""
-    try:
-        # Debug: Print all available fields to check for phone numbers
-        print(f"\n🔍 Analyzing listing data for phone numbers...")
-        print(f"   Main listing keys: {list(listing.keys())}")
-        
-        # Check for any field containing 'phone', 'Phone', 'contact', 'agent'
-        phone_like_fields = []
-        contact_like_fields = []
-        
-        def search_nested_dict(data, path=""):
-            if isinstance(data, dict):
-                for key, value in data.items():
-                    current_path = f"{path}.{key}" if path else key
-                    # Look for phone-related fields
-                    if any(term in key.lower() for term in ['phone', 'contact', 'agent', 'broker']):
-                        if 'phone' in key.lower():
-                            phone_like_fields.append(f"{current_path}: {value}")
-                        else:
-                            contact_like_fields.append(f"{current_path}: {value}")
-                    
-                    # Recurse into nested structures
-                    search_nested_dict(value, current_path)
-            elif isinstance(data, list) and data:
-                for i, item in enumerate(data[:3]):  # Check first 3 items
-                    search_nested_dict(item, f"{path}[{i}]")
-        
-        search_nested_dict(listing)
-        
-        if phone_like_fields:
-            print(f"   📞 Phone-like fields found: {phone_like_fields}")
-        else:
-            print(f"   ❌ No phone fields found")
-            
-        if contact_like_fields:
-            print(f"   👤 Contact-like fields found: {contact_like_fields}")
-        else:
-            print(f"   ❌ No additional contact fields found")
-        
-        # Extract contact information from various possible fields in listing
-        contact_info = {}
-        
-        # Try to get broker/agent name
-        if 'brokerName' in listing and listing['brokerName']:
-            contact_info['company'] = listing['brokerName']
-            contact_info['name'] = listing['brokerName']  # Use company name as contact name for now
-        
-        # Check hdpData for additional contact info
-        if 'hdpData' in listing and listing['hdpData'] and 'homeInfo' in listing['hdpData']:
-            hdp_info = listing['hdpData']['homeInfo']
-            
-            # Look for agent/broker info in hdpData
-            for field in ['listingAgent', 'agent', 'brokerName', 'listingBroker']:
-                if field in hdp_info and hdp_info[field]:
-                    if isinstance(hdp_info[field], dict):
-                        # If it's a dict, extract name and other details
-                        agent_data = hdp_info[field]
-                        if 'name' in agent_data:
-                            contact_info['name'] = agent_data['name']
-                        if 'phone' in agent_data:
-                            contact_info['phoneNumber'] = agent_data['phone']
-                        if 'id' in agent_data:
-                            contact_info['agentId'] = str(agent_data['id'])
-                    elif isinstance(hdp_info[field], str):
-                        contact_info['name'] = hdp_info[field]
-        
-        # Try to get other contact fields that might be present
-        for field in ['agentName', 'listingAgentName', 'contactName', 'agentDisplayName']:
-            if field in listing and listing[field]:
-                contact_info['name'] = listing[field]
-                break
-        
-        # Try to get phone number from various possible fields
-        phone_fields = ['phoneNumber', 'agentPhoneNumber', 'listingAgentPhone', 'contactPhone', 'phone']
-        for field in phone_fields:
-            if field in listing and listing[field]:
-                contact_info['phoneNumber'] = listing[field]
-                break
-        
-        # Try to get agent ID
-        agent_id_fields = ['agentId', 'listingAgentId', 'contactId']
-        for field in agent_id_fields:
-            if field in listing and listing[field]:
-                contact_info['agentId'] = str(listing[field])
-                break
-        
-        # Only create contact if we have at least a phone number or meaningful contact info
-        if not contact_info.get('phoneNumber') and not contact_info.get('name'):
-            return None
-        
-        # If we don't have a phone number but have company/name info, create a contact with placeholder phone
-        if not contact_info.get('phoneNumber') and contact_info.get('name'):
-            # Use a placeholder phone number format for companies without direct contact
-            contact_info['phoneNumber'] = "000-000-0000"  # Placeholder for company contacts
-            
-        # Check if contact already exists by agentId
-        if contact_info.get('agentId'):
-            existing_contact = await prisma.contact.find_unique(
-                where={
-                    'agentId': contact_info['agentId']
-                }
-            )
-            if existing_contact:
-                # Connect existing contact to lead
-                await prisma.lead.update(
-                    where={'id': lead_id},
-                    data={
-                        'contacts': {
-                            'connect': {'id': existing_contact.id}
-                        }
-                    }
-                )
-                return existing_contact.__dict__
-        
-        # Create new contact
-        new_contact_data = {
-            'agentId': contact_info.get('agentId'),
-            'name': contact_info.get('name'),
-            'phoneNumber': contact_info['phoneNumber'],
-            'type': ContactType.AGENT,  # Default to AGENT
-            'company': contact_info.get('company'),
-            'leads': {
-                'connect': {'id': lead_id}
-            }
-        }
-        
-        # Remove None values
-        new_contact_data = {k: v for k, v in new_contact_data.items() if v is not None}
-        
-        new_contact = await prisma.contact.create(data=new_contact_data)
-        return new_contact.__dict__
-        
-    except Exception as e:
-        print(f"Error extracting contact from listing: {str(e)}")
-        return None
 
 if __name__ == "__main__":
     asyncio.run(main())
