@@ -232,23 +232,45 @@ async def fetch_us_listings(skip_contacts: bool = False) -> bool:
         proxy_url = get_random_proxy()
         print(f"Using proxy for listings fetch...")
         
-        # Fetch listings using pyzill
-        response = pyzill.for_sale(
-            pagination=1,  # We only need first page as it contains all results
-            search_value="",  # Empty for nationwide search
-            min_beds=None,
-            max_beds=None,
-            min_bathrooms=None,
-            max_bathrooms=None,
-            min_price=None,
-            max_price=None,
-            ne_lat=bounds["north"],  # US bounds - nationwide
-            ne_long=bounds["east"],
-            sw_lat=bounds["south"],
-            sw_long=bounds["west"],
-            zoom_value=5,  # Lower zoom for wider area
-            proxy_url=proxy_url
-        )
+        try:
+            # Fetch listings using pyzill with proxy
+            response = pyzill.for_sale(
+                pagination=1,  # We only need first page as it contains all results
+                search_value="",  # Empty for nationwide search
+                min_beds=None,
+                max_beds=None,
+                min_bathrooms=None,
+                max_bathrooms=None,
+                min_price=None,
+                max_price=None,
+                ne_lat=bounds["north"],  # US bounds - nationwide
+                ne_long=bounds["east"],
+                sw_lat=bounds["south"],
+                sw_long=bounds["west"],
+                zoom_value=5,  # Lower zoom for wider area
+                proxy_url=proxy_url
+            )
+        except Exception as proxy_error:
+            print(f"⚠️  Proxy failed: {proxy_error}")
+            print("🔄 Trying without proxy...")
+            
+            # Fallback: Try without proxy
+            response = pyzill.for_sale(
+                pagination=1,
+                search_value="",
+                min_beds=None,
+                max_beds=None,
+                min_bathrooms=None,
+                max_bathrooms=None,
+                min_price=None,
+                max_price=None,
+                ne_lat=bounds["north"],
+                ne_long=bounds["east"],
+                sw_lat=bounds["south"],
+                sw_long=bounds["west"],
+                zoom_value=5,
+                proxy_url=None  # No proxy
+            )
 
         if not response:
             print("No response received")
@@ -367,14 +389,18 @@ async def main():
     parser = argparse.ArgumentParser(description='Fetch Zillow listings across the US')
     parser.add_argument('--skip-fetch', action='store_true', help='Skip fetching new listings')
     parser.add_argument('--skip-contacts', action='store_true', help='Skip extracting contact information from listings')
+    parser.add_argument('--skip-proxy-test', action='store_true', help='Skip proxy connection test (for production)')
     args = parser.parse_args()
     
     ensure_data_directory()
     
-    # Test proxy connection first
-    if not test_proxy_connection():
-        print("Failed to establish proxy connection. Exiting...")
-        return
+    # Test proxy connection first (unless skipped)
+    if not args.skip_proxy_test:
+        if not test_proxy_connection():
+            print("Failed to establish proxy connection. Exiting...")
+            return
+    else:
+        print("⚠️  Skipping proxy connection test (production mode)")
     
     # Connect to database
     await prisma.connect()
