@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import DashboardLayout from '@/components/DashboardLayout';
+import AuthGuard from '@/components/AuthGuard';
 import { leadService, smsService, LEAD_STATUSES, LEAD_PRIORITIES, ACTIVITY_TYPES } from '@/services/leads';
 import { 
   ArrowLeftIcon, 
@@ -185,439 +186,500 @@ export default function LeadDetailPage() {
   }
 
   return (
-    <DashboardLayout>
-      <div className="p-6">
-        {/* Header */}
-        <div className="mb-6">
-          <div className="flex items-center gap-4 mb-4">
-            <Link
-              href="/leads"
-              className="flex items-center gap-2 text-gray-600 hover:text-gray-800"
-            >
-              <ArrowLeftIcon className="h-5 w-5" />
-              Back to Leads
-            </Link>
-          </div>
-          
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">
-                {lead.address || `Lead #${lead.id}`}
-              </h1>
-              <div className="flex items-center gap-4 mt-2">
-                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(lead.status)}`}>
-                  {LEAD_STATUSES.find(s => s.value === lead.status)?.label || lead.status}
-                </span>
-                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getPriorityColor(lead.priority)}`}>
-                  {LEAD_PRIORITIES.find(p => p.value === lead.priority)?.label || lead.priority}
-                </span>
-                <span className="text-sm text-gray-500">
-                  Created {formatDate(lead.createdAt)}
-                </span>
-              </div>
-            </div>
-            
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  setShowStatusModal(true);
-                  setNewStatus(lead.status);
-                }}
-                className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-              >
-                <TagIcon className="h-4 w-4" />
-                Update Status
-              </button>
+    <AuthGuard>
+      <DashboardLayout>
+        <div className="p-6">
+          {/* Header */}
+          <div className="mb-6">
+            <div className="flex items-center gap-4 mb-4">
               <Link
-                href={`/leads/${leadId}/edit`}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                href="/leads"
+                className="flex items-center gap-2 text-gray-600 hover:text-gray-800"
               >
-                <PencilIcon className="h-4 w-4" />
-                Edit Lead
+                <ArrowLeftIcon className="h-5 w-5" />
+                Back to Leads
               </Link>
             </div>
-          </div>
-        </div>
-
-        {/* Tabs */}
-        <div className="mb-6">
-          <nav className="flex space-x-8">
-            {[
-              { id: 'overview', label: 'Overview', icon: UserIcon },
-              { id: 'sms', label: 'SMS', icon: ChatBubbleLeftRightIcon, count: smsConversations.length },
-              { id: 'appointments', label: 'Appointments', icon: CalendarDaysIcon, count: lead.appointments?.length },
-              { id: 'activity', label: 'Activity', icon: ClockIcon, count: activities.length },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-1 py-4 border-b-2 font-medium text-sm ${
-                  activeTab === tab.id
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
-                <tab.icon className="h-5 w-5" />
-                {tab.label}
-                {tab.count > 0 && (
-                  <span className="bg-gray-100 text-gray-900 py-0.5 px-2 rounded-full text-xs">
-                    {tab.count}
+            
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+                  {lead.address || `Lead #${lead.id}`}
+                  {lead.source === 'ZILLOW' && (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800" title="Scraped from Zillow">
+                      🏠 Zillow
+                    </span>
+                  )}
+                  {lead.source === 'MANUAL' && (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800" title="Manually created">
+                      ✍️ Manual
+                    </span>
+                  )}
+                </h1>
+                <div className="flex items-center gap-4 mt-2">
+                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(lead.status)}`}>
+                    {LEAD_STATUSES.find(s => s.value === lead.status)?.label || lead.status}
                   </span>
-                )}
-              </button>
-            ))}
-          </nav>
-        </div>
-
-        {/* Tab Content */}
-        <div className="bg-white rounded-lg shadow">
-          {/* Overview Tab */}
-          {activeTab === 'overview' && (
-            <div className="p-6">
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Lead Information */}
-                <div className="lg:col-span-2">
-                  <h3 className="text-lg font-medium text-gray-900 mb-4">Lead Information</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-500 mb-1">Address</label>
-                      <p className="text-gray-900">{lead.address || 'Not provided'}</p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-500 mb-1">ZIP Code</label>
-                      <p className="text-gray-900">{lead.zipCode}</p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-500 mb-1">Price</label>
-                      <p className="text-gray-900">{lead.price ? `$${lead.price}` : 'Not provided'}</p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-500 mb-1">Bedrooms</label>
-                      <p className="text-gray-900">{lead.beds || 'Not provided'}</p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-500 mb-1">Last Contact</label>
-                      <p className="text-gray-900">{formatDate(lead.lastContactDate)}</p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-500 mb-1">Next Follow-up</label>
-                      <p className="text-gray-900">{formatDate(lead.nextFollowUpDate)}</p>
-                    </div>
-                  </div>
-
-                  {/* Notes Section */}
-                  <div className="mt-6">
-                    <h4 className="text-md font-medium text-gray-900 mb-3">Notes</h4>
-                    {lead.notes ? (
-                      <div className="bg-gray-50 rounded-lg p-4">
-                        <pre className="whitespace-pre-wrap text-sm text-gray-700">{lead.notes}</pre>
-                      </div>
-                    ) : (
-                      <p className="text-gray-500 italic">No notes added yet</p>
-                    )}
-                    
-                    {/* Add Note Form */}
-                    <div className="mt-4">
-                      <textarea
-                        value={newNote}
-                        onChange={(e) => setNewNote(e.target.value)}
-                        placeholder="Add a note..."
-                        rows={3}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
-                      <button
-                        onClick={handleAddNote}
-                        disabled={!newNote.trim() || addingNote}
-                        className="mt-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {addingNote ? 'Adding...' : 'Add Note'}
-                      </button>
-                    </div>
-                  </div>
+                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getPriorityColor(lead.priority)}`}>
+                    {LEAD_PRIORITIES.find(p => p.value === lead.priority)?.label || lead.priority}
+                  </span>
+                  <span className="text-sm text-gray-500">
+                    Created {formatDate(lead.createdAt)}
+                  </span>
                 </div>
+              </div>
+              
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setShowStatusModal(true);
+                    setNewStatus(lead.status);
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  <TagIcon className="h-4 w-4" />
+                  Update Status
+                </button>
+                {lead.source !== 'ZILLOW' ? (
+                  <Link
+                    href={`/leads/${leadId}/edit`}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  >
+                    <PencilIcon className="h-4 w-4" />
+                    Edit Lead
+                  </Link>
+                ) : (
+                  <div 
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-300 text-gray-500 rounded-lg cursor-not-allowed"
+                    title="Scraped leads cannot be edited"
+                  >
+                    <PencilIcon className="h-4 w-4" />
+                    Edit Lead
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
 
-                {/* Sidebar */}
-                <div>
-                  <h3 className="text-lg font-medium text-gray-900 mb-4">Quick Stats</h3>
-                  <div className="space-y-4">
-                    <div className="bg-blue-50 rounded-lg p-4">
-                      <div className="text-2xl font-bold text-blue-900">{smsConversations.length}</div>
-                      <div className="text-sm text-blue-700">SMS Conversations</div>
+          {/* Tabs */}
+          <div className="mb-6">
+            <nav className="flex space-x-8">
+              {[
+                { id: 'overview', label: 'Overview', icon: UserIcon },
+                { id: 'sms', label: 'SMS', icon: ChatBubbleLeftRightIcon, count: smsConversations.length },
+                { id: 'appointments', label: 'Appointments', icon: CalendarDaysIcon, count: lead.appointments?.length },
+                { id: 'activity', label: 'Activity', icon: ClockIcon, count: activities.length },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center gap-2 px-1 py-4 border-b-2 font-medium text-sm ${
+                    activeTab === tab.id
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  <tab.icon className="h-5 w-5" />
+                  {tab.label}
+                  {tab.count > 0 && (
+                    <span className="bg-gray-100 text-gray-900 py-0.5 px-2 rounded-full text-xs">
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </nav>
+          </div>
+
+          {/* Tab Content */}
+          <div className="bg-white rounded-lg shadow">
+            {/* Notice for scraped leads */}
+            {lead.source === 'ZILLOW' && (
+              <div className="px-6 py-4 bg-blue-50 border-b border-blue-200">
+                <div className="flex items-center gap-2 text-blue-800">
+                  <span className="text-sm font-medium">
+                    📊 This is a scraped lead from Zillow. Lead information cannot be edited, but you can update status, add notes, and create appointments.
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Overview Tab */}
+            {activeTab === 'overview' && (
+              <div className="p-6">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {/* Lead Information */}
+                  <div className="lg:col-span-2">
+                    <h3 className="text-lg font-medium text-gray-900 mb-4">Lead Information</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-500 mb-1">Address</label>
+                        <p className="text-gray-900">{lead.address || 'Not provided'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-500 mb-1">ZIP Code</label>
+                        <p className="text-gray-900">{lead.zipCode}</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-500 mb-1">Phone Number</label>
+                        <p className="text-gray-900 flex items-center gap-1">
+                          {lead.contacts?.length > 0 && lead.contacts[0].phoneNumber ? (
+                            <>
+                              <PhoneIcon className="h-4 w-4 text-gray-400" />
+                              {lead.contacts[0].phoneNumber}
+                            </>
+                          ) : (
+                            'Not provided'
+                          )}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-500 mb-1">Lead Source</label>
+                        <p className="text-gray-900">
+                          {lead.source === 'ZILLOW' && '🏠 Zillow (Scraped)'}
+                          {lead.source === 'MANUAL' && '✍️ Manual Entry'}
+                          {lead.source !== 'ZILLOW' && lead.source !== 'MANUAL' && lead.source}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-500 mb-1">Price</label>
+                        <p className="text-gray-900">{lead.price ? `$${lead.price}` : 'Not provided'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-500 mb-1">Bedrooms</label>
+                        <p className="text-gray-900">{lead.beds || 'Not provided'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-500 mb-1">Last Contact</label>
+                        <p className="text-gray-900">{formatDate(lead.lastContactDate)}</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-500 mb-1">Next Follow-up</label>
+                        <p className="text-gray-900">{formatDate(lead.nextFollowUpDate)}</p>
+                      </div>
                     </div>
-                    <div className="bg-green-50 rounded-lg p-4">
-                      <div className="text-2xl font-bold text-green-900">{lead.appointments?.length || 0}</div>
-                      <div className="text-sm text-green-700">Appointments</div>
-                    </div>
-                    <div className="bg-purple-50 rounded-lg p-4">
-                      <div className="text-2xl font-bold text-purple-900">{activities.length}</div>
-                      <div className="text-sm text-purple-700">Total Activities</div>
+
+                    {/* Notes Section */}
+                    <div className="mt-6">
+                      <h4 className="text-md font-medium text-gray-900 mb-3">Notes</h4>
+                      {lead.notes ? (
+                        <div className="bg-gray-50 rounded-lg p-4">
+                          <pre className="whitespace-pre-wrap text-sm text-gray-700">{lead.notes}</pre>
+                        </div>
+                      ) : (
+                        <p className="text-gray-500 italic">No notes added yet</p>
+                      )}
+                      
+                      {/* Add Note Form */}
+                      <div className="mt-4">
+                        <textarea
+                          value={newNote}
+                          onChange={(e) => setNewNote(e.target.value)}
+                          placeholder="Add a note..."
+                          rows={3}
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                        <button
+                          onClick={handleAddNote}
+                          disabled={!newNote.trim() || addingNote}
+                          className="mt-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {addingNote ? 'Adding...' : 'Add Note'}
+                        </button>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Contacts */}
-                  {lead.contacts?.length > 0 && (
-                    <div className="mt-6">
-                      <h4 className="text-md font-medium text-gray-900 mb-3">Contacts</h4>
-                      <div className="space-y-2">
-                        {lead.contacts.map((contact) => (
-                          <div key={contact.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                            <UserIcon className="h-5 w-5 text-gray-400" />
-                            <div>
-                              <div className="font-medium text-gray-900">{contact.name}</div>
-                              <div className="text-sm text-gray-500 flex items-center gap-1">
-                                <PhoneIcon className="h-4 w-4" />
-                                {contact.phoneNumber}
+                  {/* Sidebar */}
+                  <div>
+                    <h3 className="text-lg font-medium text-gray-900 mb-4">Quick Stats</h3>
+                    <div className="space-y-4">
+                      <div className="bg-blue-50 rounded-lg p-4">
+                        <div className="text-2xl font-bold text-blue-900">{smsConversations.length}</div>
+                        <div className="text-sm text-blue-700">SMS Conversations</div>
+                      </div>
+                      <div className="bg-green-50 rounded-lg p-4">
+                        <div className="text-2xl font-bold text-green-900">{lead.appointments?.length || 0}</div>
+                        <div className="text-sm text-green-700">Appointments</div>
+                      </div>
+                      <div className="bg-purple-50 rounded-lg p-4">
+                        <div className="text-2xl font-bold text-purple-900">{activities.length}</div>
+                        <div className="text-sm text-purple-700">Total Activities</div>
+                      </div>
+                    </div>
+
+                    {/* Contacts */}
+                    {lead.contacts?.length > 0 && (
+                      <div className="mt-6">
+                        <h4 className="text-md font-medium text-gray-900 mb-3">Contacts</h4>
+                        <div className="space-y-2">
+                          {lead.contacts.map((contact) => (
+                            <div key={contact.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+                              <UserIcon className="h-5 w-5 text-gray-400" />
+                              <div>
+                                <div className="font-medium text-gray-900">
+                                  {contact.name || 'Unknown Contact'}
+                                </div>
+                                <div className="text-sm text-gray-500 flex items-center gap-1">
+                                  <PhoneIcon className="h-4 w-4" />
+                                  {contact.phoneNumber}
+                                </div>
+                                {contact.type && (
+                                  <div className="text-xs text-gray-400">
+                                    {contact.type}
+                                  </div>
+                                )}
                               </div>
                             </div>
-                          </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SMS Tab */}
+            {activeTab === 'sms' && (
+              <div className="p-6">
+                {smsConversations.length > 0 ? (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    {/* Conversations List */}
+                    <div>
+                      <h3 className="text-lg font-medium text-gray-900 mb-4">Conversations</h3>
+                      <div className="space-y-2">
+                        {smsConversations.map((conversation) => (
+                          <button
+                            key={conversation.id}
+                            onClick={() => {
+                              setSelectedConversation(conversation);
+                              setMessages(conversation.messages || []);
+                            }}
+                            className={`w-full text-left p-3 rounded-lg border ${
+                              selectedConversation?.id === conversation.id
+                                ? 'border-blue-500 bg-blue-50'
+                                : 'border-gray-200 hover:bg-gray-50'
+                            }`}
+                          >
+                            <div className="font-medium text-gray-900">{conversation.phoneNumber}</div>
+                            <div className="text-sm text-gray-500">
+                              {conversation.messages?.length || 0} messages
+                            </div>
+                          </button>
                         ))}
                       </div>
                     </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
 
-          {/* SMS Tab */}
-          {activeTab === 'sms' && (
-            <div className="p-6">
-              {smsConversations.length > 0 ? (
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                  {/* Conversations List */}
-                  <div>
-                    <h3 className="text-lg font-medium text-gray-900 mb-4">Conversations</h3>
-                    <div className="space-y-2">
-                      {smsConversations.map((conversation) => (
-                        <button
-                          key={conversation.id}
-                          onClick={() => {
-                            setSelectedConversation(conversation);
-                            setMessages(conversation.messages || []);
-                          }}
-                          className={`w-full text-left p-3 rounded-lg border ${
-                            selectedConversation?.id === conversation.id
-                              ? 'border-blue-500 bg-blue-50'
-                              : 'border-gray-200 hover:bg-gray-50'
-                          }`}
-                        >
-                          <div className="font-medium text-gray-900">{conversation.phoneNumber}</div>
-                          <div className="text-sm text-gray-500">
-                            {conversation.messages?.length || 0} messages
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Messages */}
-                  <div className="lg:col-span-2">
-                    {selectedConversation ? (
-                      <>
-                        <h3 className="text-lg font-medium text-gray-900 mb-4">
-                          Messages - {selectedConversation.phoneNumber}
-                        </h3>
-                        
-                        {/* Messages List */}
-                        <div className="h-96 overflow-y-auto border border-gray-200 rounded-lg p-4 mb-4">
-                          {messages.length > 0 ? (
-                            <div className="space-y-4">
-                              {messages.map((message) => (
-                                <div
-                                  key={message.id}
-                                  className={`flex ${message.direction === 'OUTBOUND' ? 'justify-end' : 'justify-start'}`}
-                                >
+                    {/* Messages */}
+                    <div className="lg:col-span-2">
+                      {selectedConversation ? (
+                        <>
+                          <h3 className="text-lg font-medium text-gray-900 mb-4">
+                            Messages - {selectedConversation.phoneNumber}
+                          </h3>
+                          
+                          {/* Messages List */}
+                          <div className="h-96 overflow-y-auto border border-gray-200 rounded-lg p-4 mb-4">
+                            {messages.length > 0 ? (
+                              <div className="space-y-4">
+                                {messages.map((message) => (
                                   <div
-                                    className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                                      message.direction === 'OUTBOUND'
-                                        ? 'bg-blue-600 text-white'
-                                        : 'bg-gray-200 text-gray-900'
-                                    }`}
+                                    key={message.id}
+                                    className={`flex ${message.direction === 'OUTBOUND' ? 'justify-end' : 'justify-start'}`}
                                   >
-                                    <p>{message.content}</p>
-                                    <p className="text-xs mt-1 opacity-75">
-                                      {formatDateTime(message.createdAt)}
-                                    </p>
+                                    <div
+                                      className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
+                                        message.direction === 'OUTBOUND'
+                                          ? 'bg-blue-600 text-white'
+                                          : 'bg-gray-200 text-gray-900'
+                                      }`}
+                                    >
+                                      <p>{message.content}</p>
+                                      <p className="text-xs mt-1 opacity-75">
+                                        {formatDateTime(message.createdAt)}
+                                      </p>
+                                    </div>
                                   </div>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-gray-500 text-center">No messages yet</p>
-                          )}
-                        </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-gray-500 text-center">No messages yet</p>
+                            )}
+                          </div>
 
-                        {/* Send Message Form */}
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            value={newMessage}
-                            onChange={(e) => setNewMessage(e.target.value)}
-                            placeholder="Type your message..."
-                            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                            onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                          />
-                          <button
-                            onClick={handleSendMessage}
-                            disabled={!newMessage.trim() || sendingMessage}
-                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {sendingMessage ? 'Sending...' : 'Send'}
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <p className="text-gray-500">Select a conversation to view messages</p>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="text-center py-12">
-                  <ChatBubbleLeftRightIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">No SMS conversations</h3>
-                  <p className="text-gray-600 mb-6">Start a conversation with this lead</p>
-                  <button className="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700">
-                    <PlusIcon className="h-5 w-5" />
-                    Start Conversation
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Appointments Tab */}
-          {activeTab === 'appointments' && (
-            <div className="p-6">
-              {lead.appointments?.length > 0 ? (
-                <div className="space-y-4">
-                  {lead.appointments.map((appointment) => (
-                    <div key={appointment.id} className="border border-gray-200 rounded-lg p-4">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h4 className="font-medium text-gray-900">{appointment.title}</h4>
-                          <p className="text-sm text-gray-600">{appointment.description}</p>
-                          <p className="text-sm text-gray-500 mt-1">
-                            {formatDateTime(appointment.datetime)}
-                            {appointment.location && ` • ${appointment.location}`}
-                          </p>
-                        </div>
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                          appointment.status === 'COMPLETED' ? 'bg-green-100 text-green-800' :
-                          appointment.status === 'SCHEDULED' ? 'bg-blue-100 text-blue-800' :
-                          appointment.status === 'CANCELED' ? 'bg-red-100 text-red-800' :
-                          'bg-gray-100 text-gray-800'
-                        }`}>
-                          {appointment.status}
-                        </span>
-                      </div>
+                          {/* Send Message Form */}
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={newMessage}
+                              onChange={(e) => setNewMessage(e.target.value)}
+                              placeholder="Type your message..."
+                              className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                              onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                            />
+                            <button
+                              onClick={handleSendMessage}
+                              disabled={!newMessage.trim() || sendingMessage}
+                              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {sendingMessage ? 'Sending...' : 'Send'}
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        <p className="text-gray-500">Select a conversation to view messages</p>
+                      )}
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-12">
-                  <CalendarDaysIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">No appointments</h3>
-                  <p className="text-gray-600 mb-6">Schedule an appointment with this lead</p>
-                  <button className="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700">
-                    <PlusIcon className="h-5 w-5" />
-                    Schedule Appointment
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+                  </div>
+                ) : (
+                  <div className="text-center py-12">
+                    <ChatBubbleLeftRightIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                    <h3 className="text-lg font-medium text-gray-900 mb-2">No SMS conversations</h3>
+                    <p className="text-gray-600 mb-6">Start a conversation with this lead</p>
+                    <button className="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700">
+                      <PlusIcon className="h-5 w-5" />
+                      Start Conversation
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
-          {/* Activity Tab */}
-          {activeTab === 'activity' && (
-            <div className="p-6">
-              {activities.length > 0 ? (
-                <div className="space-y-4">
-                  {activities.map((activity) => (
-                    <div key={activity.id} className="flex items-start gap-4 p-4 border border-gray-200 rounded-lg">
-                      <div className="flex-shrink-0 w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                        <ClockIcon className="h-4 w-4 text-blue-600" />
-                      </div>
-                      <div className="flex-1">
+            {/* Appointments Tab */}
+            {activeTab === 'appointments' && (
+              <div className="p-6">
+                {lead.appointments?.length > 0 ? (
+                  <div className="space-y-4">
+                    {lead.appointments.map((appointment) => (
+                      <div key={appointment.id} className="border border-gray-200 rounded-lg p-4">
                         <div className="flex items-center justify-between">
-                          <h4 className="font-medium text-gray-900">
-                            {ACTIVITY_TYPES[activity.type] || activity.type}
-                          </h4>
-                          <span className="text-sm text-gray-500">
-                            {formatDateTime(activity.createdAt)}
+                          <div>
+                            <h4 className="font-medium text-gray-900">{appointment.title}</h4>
+                            <p className="text-sm text-gray-600">{appointment.description}</p>
+                            <p className="text-sm text-gray-500 mt-1">
+                              {formatDateTime(appointment.datetime)}
+                              {appointment.location && ` • ${appointment.location}`}
+                            </p>
+                          </div>
+                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                            appointment.status === 'COMPLETED' ? 'bg-green-100 text-green-800' :
+                            appointment.status === 'SCHEDULED' ? 'bg-blue-100 text-blue-800' :
+                            appointment.status === 'CANCELED' ? 'bg-red-100 text-red-800' :
+                            'bg-gray-100 text-gray-800'
+                          }`}>
+                            {appointment.status}
                           </span>
                         </div>
-                        <p className="text-gray-600 mt-1">{activity.description}</p>
-                        {activity.user && (
-                          <p className="text-xs text-gray-500 mt-1">by {activity.user.email}</p>
-                        )}
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-12">
+                    <CalendarDaysIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                    <h3 className="text-lg font-medium text-gray-900 mb-2">No appointments</h3>
+                    <p className="text-gray-600 mb-6">Schedule an appointment with this lead</p>
+                    <button className="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700">
+                      <PlusIcon className="h-5 w-5" />
+                      Schedule Appointment
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Activity Tab */}
+            {activeTab === 'activity' && (
+              <div className="p-6">
+                {activities.length > 0 ? (
+                  <div className="space-y-4">
+                    {activities.map((activity) => (
+                      <div key={activity.id} className="flex items-start gap-4 p-4 border border-gray-200 rounded-lg">
+                        <div className="flex-shrink-0 w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                          <ClockIcon className="h-4 w-4 text-blue-600" />
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between">
+                            <h4 className="font-medium text-gray-900">
+                              {ACTIVITY_TYPES[activity.type] || activity.type}
+                            </h4>
+                            <span className="text-sm text-gray-500">
+                              {formatDateTime(activity.createdAt)}
+                            </span>
+                          </div>
+                          <p className="text-gray-600 mt-1">{activity.description}</p>
+                          {activity.user && (
+                            <p className="text-xs text-gray-500 mt-1">by {activity.user.email}</p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-12">
+                    <ClockIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                    <h3 className="text-lg font-medium text-gray-900 mb-2">No activity yet</h3>
+                    <p className="text-gray-600">Activity will appear here as you interact with this lead</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Status Update Modal */}
+          {showStatusModal && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg p-6 w-full max-w-md">
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Update Lead Status</h3>
+                
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">New Status</label>
+                    <select
+                      value={newStatus}
+                      onChange={(e) => setNewStatus(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                    >
+                      {LEAD_STATUSES.map(status => (
+                        <option key={status.value} value={status.value}>
+                          {status.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Notes (optional)</label>
+                    <textarea
+                      value={statusNotes}
+                      onChange={(e) => setStatusNotes(e.target.value)}
+                      rows={3}
+                      placeholder="Add any notes about this status change..."
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
                 </div>
-              ) : (
-                <div className="text-center py-12">
-                  <ClockIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">No activity yet</h3>
-                  <p className="text-gray-600">Activity will appear here as you interact with this lead</p>
+                
+                <div className="flex justify-end gap-4 mt-6">
+                  <button
+                    onClick={() => setShowStatusModal(false)}
+                    className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleStatusUpdate}
+                    disabled={updatingStatus || !newStatus}
+                    className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {updatingStatus ? 'Updating...' : 'Update Status'}
+                  </button>
                 </div>
-              )}
+              </div>
             </div>
           )}
         </div>
-
-        {/* Status Update Modal */}
-        {showStatusModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 w-full max-w-md">
-              <h3 className="text-lg font-medium text-gray-900 mb-4">Update Lead Status</h3>
-              
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">New Status</label>
-                  <select
-                    value={newStatus}
-                    onChange={(e) => setNewStatus(e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
-                  >
-                    {LEAD_STATUSES.map(status => (
-                      <option key={status.value} value={status.value}>
-                        {status.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Notes (optional)</label>
-                  <textarea
-                    value={statusNotes}
-                    onChange={(e) => setStatusNotes(e.target.value)}
-                    rows={3}
-                    placeholder="Add any notes about this status change..."
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-              
-              <div className="flex justify-end gap-4 mt-6">
-                <button
-                  onClick={() => setShowStatusModal(false)}
-                  className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleStatusUpdate}
-                  disabled={updatingStatus || !newStatus}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {updatingStatus ? 'Updating...' : 'Update Status'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </DashboardLayout>
+      </DashboardLayout>
+    </AuthGuard>
   );
 } 

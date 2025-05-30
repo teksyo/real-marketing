@@ -41,51 +41,86 @@ router.get('/', authMiddleware, async (req: Request, res: Response): Promise<voi
 
     const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
     
-    const where: any = {
-      createdById: user.id,
+    // Base filter: show scraped leads to all users, manual leads only to creators
+    let where: any = {
+      OR: [
+        { source: 'ZILLOW' }, // Show all Zillow scraped leads to everyone
+        { createdById: user.id } // Show user's own manually created leads
+      ]
     };
 
-    // Add filters
+    // If filtering by specific source, adjust the logic
+    if (source) {
+      if (source === 'ZILLOW') {
+        where = { source: 'ZILLOW' };
+      } else {
+        where = { 
+          source: source,
+          createdById: user.id 
+        };
+      }
+    }
+
+    // Apply other filters
     if (status) where.status = status;
     if (priority) where.priority = priority;
-    if (source) where.source = source;
     if (region) where.region = region;
     
     // Add search functionality
     if (search) {
-      where.OR = [
+      const searchConditions = [
         { address: { contains: search, mode: 'insensitive' } },
         { zipCode: { contains: search } },
         { notes: { contains: search, mode: 'insensitive' } },
       ];
+
+      if (where.OR) {
+        // If we have OR conditions (base case), combine with search
+        where = {
+          AND: [
+            { OR: where.OR },
+            { OR: searchConditions }
+          ]
+        };
+      } else {
+        // If we have specific filters, just add search
+        const existingConditions = { ...where };
+        where = {
+          AND: [
+            existingConditions,
+            { OR: searchConditions }
+          ]
+        };
+      }
     }
 
     const [leads, total] = await Promise.all([
       prisma.lead.findMany({
         where,
-        include: {
-          contacts: true,
-          appointments: {
-            orderBy: { datetime: 'desc' },
-            take: 1,
-          },
-          leadActivities: {
-            orderBy: { createdAt: 'desc' },
-            take: 3,
-            include: {
-              user: {
-                select: { email: true },
-              },
+        select: {
+          id: true,
+          address: true,
+          zipCode: true,
+          price: true,
+          beds: true,
+          status: true,
+          priority: true,
+          source: true,
+          lastContactDate: true,
+          createdAt: true,
+          // Only get the first contact's phone number
+          contacts: {
+            select: {
+              phoneNumber: true
             },
+            take: 1
           },
-          smsConversations: {
-            include: {
-              messages: {
-                orderBy: { createdAt: 'desc' },
-                take: 1,
-              },
-            },
-          },
+          // Only get counts for action indicators
+          _count: {
+            select: {
+              smsConversations: true
+            }
+          }
         },
         orderBy: { [sortBy as string]: sortOrder },
         skip,
@@ -94,8 +129,15 @@ router.get('/', authMiddleware, async (req: Request, res: Response): Promise<voi
       prisma.lead.count({ where }),
     ]);
 
+    // Transform the data to match the expected frontend format
+    const transformedLeads = leads.map(lead => ({
+      ...lead,
+      contacts: lead.contacts, // Keep contacts array for compatibility
+      smsConversations: Array(lead._count.smsConversations).fill({}) // Create array with count for length check
+    }));
+
     res.json({
-      leads,
+      leads: transformedLeads,
       pagination: {
         total,
         page: parseInt(page as string),
@@ -119,7 +161,10 @@ router.get('/:id', authMiddleware, async (req: Request, res: Response): Promise<
     const lead = await prisma.lead.findFirst({
       where: {
         id: leadId,
-        createdById: user.id,
+        OR: [
+          { source: 'ZILLOW' }, // Allow all users to view Zillow scraped leads
+          { createdById: user.id } // Allow users to view their own manually created leads
+        ]
       },
       include: {
         contacts: true,
@@ -469,11 +514,14 @@ router.get('/:id/activities', authMiddleware, async (req: Request, res: Response
     
     const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
 
-    // Check if lead belongs to user
+    // Check if user can access this lead (same logic as lead detail route)
     const lead = await prisma.lead.findFirst({
       where: {
         id: leadId,
-        createdById: user.id,
+        OR: [
+          { source: 'ZILLOW' }, // Allow all users to view activities for Zillow scraped leads
+          { createdById: user.id } // Allow users to view activities for their own manually created leads
+        ]
       },
     });
 
@@ -598,14 +646,17 @@ router.delete('/:id', authMiddleware, async (req: Request, res: Response): Promi
 // GET /api/leads/region/:region - Get leads by region (for Zillow data)
 router.get('/region/:region', authMiddleware, async (req: Request, res: Response): Promise<void> => {
   const user = (req as any).user;
-  
+
   try {
     const { region } = req.params;
     
     const leads = await prisma.lead.findMany({
       where: {
         region,
-        createdById: user.id,
+        OR: [
+          { source: 'ZILLOW' }, // Show all Zillow scraped leads to everyone
+          { createdById: user.id } // Show user's own manually created leads
+        ]
       },
       include: {
         contacts: true,
@@ -627,14 +678,17 @@ router.get('/region/:region', authMiddleware, async (req: Request, res: Response
 // GET /api/leads/zip/:zip - Get leads by ZIP code
 router.get('/zip/:zip', authMiddleware, async (req: Request, res: Response): Promise<void> => {
   const user = (req as any).user;
-  
+
   try {
     const { zip } = req.params;
     
     const leads = await prisma.lead.findMany({
       where: {
         zipCode: zip,
-        createdById: user.id,
+        OR: [
+          { source: 'ZILLOW' }, // Show all Zillow scraped leads to everyone
+          { createdById: user.id } // Show user's own manually created leads
+        ]
       },
       include: {
         contacts: true,

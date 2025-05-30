@@ -5,12 +5,14 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useAuth } from '@/contexts/AuthContext';
 import Input from '@/components/Input';
 import Button from '@/components/Button';
 import { API_URL } from '@/utils/api';
 
 export default function SignIn() {
   const router = useRouter();
+  const { login } = useAuth();
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -24,8 +26,9 @@ export default function SignIn() {
     try {
       const response = await axios.post(`${API_URL}/api/auth/login`, formData);
       toast.success('Successfully signed in!');
-      // Store the token
-      localStorage.setItem('token', response.data.token);
+      
+      // Use AuthContext login method
+      login(response.data.token, response.data.user);
       router.push('/dashboard');
     } catch (error) {
       toast.error(error.response?.data?.message || 'Failed to sign in');

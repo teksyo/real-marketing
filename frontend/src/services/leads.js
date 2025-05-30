@@ -1,15 +1,6 @@
-import { API_URL } from '@/utils/api';
+import { API_URL, apiFetch } from '@/utils/api';
 
 const API_BASE_URL = API_URL;
-
-// Helper function to get authorization headers
-const getAuthHeaders = () => {
-  const token = localStorage.getItem('token');
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`
-  };
-};
 
 // Lead Management API
 export const leadService = {
@@ -24,9 +15,8 @@ export const leadService = {
         }
       });
 
-      const response = await fetch(`${API_BASE_URL}/api/leads?${queryParams}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/leads?${queryParams}`, {
         method: 'GET',
-        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -43,9 +33,8 @@ export const leadService = {
   // Get specific lead by ID
   getLeadById: async (leadId) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/leads/${leadId}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/leads/${leadId}`, {
         method: 'GET',
-        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -62,9 +51,8 @@ export const leadService = {
   // Create new lead
   createLead: async (leadData) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/leads`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/leads`, {
         method: 'POST',
-        headers: getAuthHeaders(),
         body: JSON.stringify(leadData),
       });
 
@@ -82,9 +70,8 @@ export const leadService = {
   // Update lead
   updateLead: async (leadId, leadData) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/leads/${leadId}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/leads/${leadId}`, {
         method: 'PUT',
-        headers: getAuthHeaders(),
         body: JSON.stringify(leadData),
       });
 
@@ -102,9 +89,8 @@ export const leadService = {
   // Update lead status
   updateLeadStatus: async (leadId, status, notes = '') => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/leads/${leadId}/status`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/leads/${leadId}/status`, {
         method: 'PUT',
-        headers: getAuthHeaders(),
         body: JSON.stringify({ status, notes }),
       });
 
@@ -122,9 +108,8 @@ export const leadService = {
   // Add note to lead
   addNote: async (leadId, note) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/leads/${leadId}/notes`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/leads/${leadId}/notes`, {
         method: 'POST',
-        headers: getAuthHeaders(),
         body: JSON.stringify({ note }),
       });
 
@@ -142,9 +127,8 @@ export const leadService = {
   // Get lead activities
   getLeadActivities: async (leadId, page = 1, limit = 50) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/leads/${leadId}/activities?page=${page}&limit=${limit}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/leads/${leadId}/activities?page=${page}&limit=${limit}`, {
         method: 'GET',
-        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -161,9 +145,8 @@ export const leadService = {
   // Schedule follow-up
   scheduleFollowUp: async (leadId, followUpDate, notes = '') => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/leads/${leadId}/follow-up`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/leads/${leadId}/follow-up`, {
         method: 'POST',
-        headers: getAuthHeaders(),
         body: JSON.stringify({ followUpDate, notes }),
       });
 
@@ -181,9 +164,8 @@ export const leadService = {
   // Delete lead
   deleteLead: async (leadId) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/leads/${leadId}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/leads/${leadId}`, {
         method: 'DELETE',
-        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -200,9 +182,8 @@ export const leadService = {
   // Get leads by region (existing functionality)
   getLeadsByRegion: async (region) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/leads/region/${region}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/leads/region/${region}`, {
         method: 'GET',
-        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -219,9 +200,8 @@ export const leadService = {
   // Get leads by ZIP code (existing functionality)
   getLeadsByZip: async (zip) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/leads/zip/${zip}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/leads/zip/${zip}`, {
         method: 'GET',
-        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -249,9 +229,8 @@ export const smsService = {
         }
       });
 
-      const response = await fetch(`${API_BASE_URL}/api/sms/conversations?${queryParams}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/sms/conversations?${queryParams}`, {
         method: 'GET',
-        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -268,9 +247,8 @@ export const smsService = {
   // Get specific conversation
   getConversation: async (conversationId) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sms/conversations/${conversationId}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/sms/conversations/${conversationId}`, {
         method: 'GET',
-        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -287,9 +265,8 @@ export const smsService = {
   // Create SMS conversation
   createConversation: async (leadId, phoneNumber) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sms/conversations`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/sms/conversations`, {
         method: 'POST',
-        headers: getAuthHeaders(),
         body: JSON.stringify({ leadId, phoneNumber }),
       });
 
@@ -307,9 +284,8 @@ export const smsService = {
   // Send SMS message
   sendMessage: async (conversationId, content, phoneNumber = null) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sms/send`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/sms/send`, {
         method: 'POST',
-        headers: getAuthHeaders(),
         body: JSON.stringify({ conversationId, content, phoneNumber }),
       });
 
@@ -327,9 +303,8 @@ export const smsService = {
   // Get messages for conversation
   getMessages: async (conversationId, page = 1, limit = 50) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sms/messages/${conversationId}?page=${page}&limit=${limit}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/sms/messages/${conversationId}?page=${page}&limit=${limit}`, {
         method: 'GET',
-        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -346,9 +321,8 @@ export const smsService = {
   // Update conversation status
   updateConversationStatus: async (conversationId, isActive) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sms/conversations/${conversationId}/status`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/sms/conversations/${conversationId}/status`, {
         method: 'PUT',
-        headers: getAuthHeaders(),
         body: JSON.stringify({ isActive }),
       });
 
@@ -364,16 +338,10 @@ export const smsService = {
   },
 
   // Get SMS statistics
-  getStats: async (startDate = null, endDate = null) => {
+  getStats: async () => {
     try {
-      const queryParams = new URLSearchParams();
-      
-      if (startDate) queryParams.append('startDate', startDate);
-      if (endDate) queryParams.append('endDate', endDate);
-
-      const response = await fetch(`${API_BASE_URL}/api/sms/stats?${queryParams}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/sms/stats`, {
         method: 'GET',
-        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -383,16 +351,20 @@ export const smsService = {
       return await response.json();
     } catch (error) {
       console.error('Error fetching SMS stats:', error);
-      throw error;
+      // Return default stats if API fails
+      return {
+        totalMessages: 0,
+        activeConversations: 0,
+        responseRate: '0'
+      };
     }
   },
 
   // Delete conversation
   deleteConversation: async (conversationId) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sms/conversations/${conversationId}`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/sms/conversations/${conversationId}`, {
         method: 'DELETE',
-        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {

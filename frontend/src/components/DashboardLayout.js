@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useAuth } from '@/contexts/AuthContext';
 import { 
   HomeIcon, 
   UserIcon, 
@@ -10,7 +11,8 @@ import {
   UsersIcon,
   ChatBubbleLeftRightIcon,
   Bars3Icon, 
-  XMarkIcon 
+  XMarkIcon,
+  ArrowRightOnRectangleIcon
 } from '@heroicons/react/24/outline';
 
 const navigation = [
@@ -24,6 +26,11 @@ const navigation = [
 export default function DashboardLayout({ children }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const { user, logout } = useAuth();
+
+  const handleLogout = () => {
+    logout();
+  };
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -49,6 +56,7 @@ export default function DashboardLayout({ children }) {
                       ? 'bg-gray-100 text-gray-900'
                       : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                   }`}
+                  onClick={() => setSidebarOpen(false)}
                 >
                   <item.icon
                     className={`mr-3 h-6 w-6 flex-shrink-0 ${
@@ -60,6 +68,29 @@ export default function DashboardLayout({ children }) {
               );
             })}
           </nav>
+
+          {/* Mobile User Info and Logout */}
+          <div className="border-t border-gray-200 p-4">
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <div className="h-8 w-8 rounded-full bg-blue-600 flex items-center justify-center">
+                  <span className="text-sm font-medium text-white">
+                    {user?.email?.charAt(0).toUpperCase()}
+                  </span>
+                </div>
+              </div>
+              <div className="ml-3 flex-1">
+                <p className="text-sm font-medium text-gray-900 truncate">{user?.email}</p>
+              </div>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="mt-3 w-full flex items-center justify-center px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded-md"
+            >
+              <ArrowRightOnRectangleIcon className="h-4 w-4 mr-2" />
+              Sign out
+            </button>
+          </div>
         </div>
       </div>
 
@@ -92,11 +123,35 @@ export default function DashboardLayout({ children }) {
               );
             })}
           </nav>
+
+          {/* Desktop User Info and Logout */}
+          <div className="border-t border-gray-200 p-4">
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <div className="h-8 w-8 rounded-full bg-blue-600 flex items-center justify-center">
+                  <span className="text-sm font-medium text-white">
+                    {user?.email?.charAt(0).toUpperCase()}
+                  </span>
+                </div>
+              </div>
+              <div className="ml-3 flex-1">
+                <p className="text-sm font-medium text-gray-900 truncate">{user?.email}</p>
+              </div>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="mt-3 w-full flex items-center justify-center px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded-md"
+            >
+              <ArrowRightOnRectangleIcon className="h-4 w-4 mr-2" />
+              Sign out
+            </button>
+          </div>
         </div>
       </div>
 
       {/* Main content */}
       <div className="lg:pl-64">
+        {/* Mobile header with user info */}
         <div className="sticky top-0 z-10 flex h-16 flex-shrink-0 bg-white shadow lg:hidden">
           <button
             type="button"
@@ -105,8 +160,18 @@ export default function DashboardLayout({ children }) {
           >
             <Bars3Icon className="h-6 w-6" />
           </button>
-          <div className="flex flex-1 justify-center px-4">
+          <div className="flex flex-1 justify-between items-center px-4">
             <h2 className="text-2xl font-bold text-gray-900">Real Marketing</h2>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-600 hidden sm:block">{user?.email}</span>
+              <button
+                onClick={handleLogout}
+                className="p-2 text-red-600 hover:bg-red-50 rounded-md"
+                title="Sign out"
+              >
+                <ArrowRightOnRectangleIcon className="h-5 w-5" />
+              </button>
+            </div>
           </div>
         </div>
 
