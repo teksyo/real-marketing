@@ -58,6 +58,15 @@ def main():
     args = parser.parse_args()
     
     log_message("🏠 Starting Complete Zillow Scraper Pipeline")
+    log_message(f"Current working directory: {os.getcwd()}")
+    log_message(f"Script location: {os.path.abspath(__file__)}")
+    
+    # Check if required files exist
+    listings_script = 'pyzill_fetch_listings.py'
+    contacts_script = 'scraper_api_contacts.py'
+    
+    log_message(f"Checking for {listings_script}: {'✅ Found' if os.path.exists(listings_script) else '❌ Missing'}")
+    log_message(f"Checking for {contacts_script}: {'✅ Found' if os.path.exists(contacts_script) else '❌ Missing'}")
     
     # Check for required API key
     scraperapi_key = os.getenv('SCRAPERAPI_KEY')
@@ -65,6 +74,8 @@ def main():
         log_message("❌ SCRAPERAPI_KEY environment variable not set")
         log_message("Please run: export SCRAPERAPI_KEY='your_api_key_here'")
         return False
+    else:
+        log_message("✅ SCRAPERAPI_KEY is set")
     
     success_count = 0
     total_steps = 0
