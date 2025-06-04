@@ -322,52 +322,312 @@ def extract_phone_numbers(html_content: str) -> List[str]:
     return list(phone_numbers)
 
 def extract_agent_info(soup: BeautifulSoup) -> Dict[str, any]:
-    """Extract agent information from parsed HTML"""
+    """Extract agent information from Zillow property page HTML"""
     agent_info = {'names': [], 'phones': [], 'companies': []}
     
     # Extract phone numbers from entire page
     phones = extract_phone_numbers(str(soup))
     agent_info['phones'].extend(phones)
     
-    # Extract agent names
-    html_text = soup.get_text()
-    name_patterns = [
-        r'\b([A-Z][a-z]+ [A-Z][a-z]+)\b',
-        r'\b([A-Z][a-z]+ [A-Z]\. [A-Z][a-z]+)\b',
-        r'\b([A-Z][a-z]+ [A-Z][a-z]+ [A-Z][a-z]+)\b',
+    # Zillow-specific agent information extraction based on the screenshot structure
+    agent_names = set()
+    companies = set()
+    
+    # 1. Look for "Listed by" section (visible in your screenshot)
+    listed_by_patterns = [
+        # Direct "Listed by" text followed by name
+        r'Listed by\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+        r'Listed by\s*\n\s*([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
     ]
     
-    for pattern in name_patterns:
-        matches = re.findall(pattern, html_text)
+    page_text = soup.get_text()
+    for pattern in listed_by_patterns:
+        matches = re.findall(pattern, page_text, re.MULTILINE | re.IGNORECASE)
         for match in matches:
             name = match.strip()
-            if (len(name.split()) >= 2 and len(name) < 50 and 
-                not any(word.lower() in name.lower() for word in 
-                       ['street', 'ave', 'road', 'blvd', 'dr', 'miami', 'florida', 'zillow', 'mls', 'sqft'])):
-                agent_info['names'].append(name)
+            if is_valid_agent_name(name):
+                agent_names.add(name)
+                log_message(f"   📝 Found agent via 'Listed by': {name}")
     
-    # Extract company names
+    # 2. Look for agent profile sections with specific Zillow selectors
+    zillow_agent_selectors = [
+        # Common Zillow agent container selectors
+        '[data-testid*="agent"]',
+        '[data-testid*="listing-agent"]',
+        '[data-testid*="contact"]',
+        '.agent-profile',
+        '.listing-agent',
+        '.agent-info',
+        '.contact-info',
+        '[class*="agent"]',
+        '[class*="realtor"]',
+        # Zillow-specific attribution selectors
+        '[data-testid="attribution-AGENT"]',
+        '[data-testid="attribution-BROKER"]',
+        '[data-testid="attribution-LISTING_OFFICE"]',
+        # Profile card selectors (based on screenshot structure)
+        '.profile-card',
+        '.agent-card',
+        '[class*="profile"]',
+        '[class*="card"]'
+    ]
+    
+    for selector in zillow_agent_selectors:
+        elements = soup.select(selector)
+        for element in elements:
+            text = element.get_text(strip=True)
+            # Extract names from agent sections
+            names = extract_names_from_agent_section(text)
+            for name in names:
+                if is_valid_agent_name(name):
+                    agent_names.add(name)
+                    log_message(f"   📝 Found agent via selector '{selector}': {name}")
+    
+    # 3. Look for specific text patterns around contact buttons
+    contact_button_patterns = [
+        r'Contact\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+        r'Call\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+        r'Text\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+        r'Email\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+    ]
+    
+    for pattern in contact_button_patterns:
+        matches = re.findall(pattern, page_text, re.MULTILINE | re.IGNORECASE)
+        for match in matches:
+            name = match.strip()
+            if is_valid_agent_name(name):
+                agent_names.add(name)
+                log_message(f"   📝 Found agent via contact pattern: {name}")
+    
+    # 4. Look for names in proximity to phone numbers (within 300 characters)
+    html_content = str(soup)
+    for phone in phones:
+        phone_clean = re.sub(r'[^\d]', '', phone)
+        
+        # Find all occurrences of this phone number
+        phone_patterns = [
+            re.escape(phone),
+            re.escape(phone_clean),
+            phone_clean[:3] + r'[-.\s]*' + phone_clean[3:6] + r'[-.\s]*' + phone_clean[6:],
+        ]
+        
+        for pattern in phone_patterns:
+            for match in re.finditer(pattern, html_content, re.IGNORECASE):
+                # Get context around phone number
+                start = max(0, match.start() - 300)
+                end = min(len(html_content), match.end() + 300)
+                context = html_content[start:end]
+                
+                # Parse context and extract names
+                context_soup = BeautifulSoup(context, 'html.parser')
+                context_text = context_soup.get_text()
+                
+                names = extract_names_from_agent_section(context_text)
+                for name in names:
+                    if is_valid_agent_name(name):
+                        agent_names.add(name)
+                        log_message(f"   📝 Found agent near phone {phone}: {name}")
+    
+    # 5. Look for company/brokerage information
     company_patterns = [
-        r'(?:Brokered by|Listed by|Courtesy of|Listing provided by)\s*:?\s*([A-Za-z][^,\n\.]{5,50})',
-        r'\b([A-Z][a-zA-Z\s&]{3,40}(?:Realty|Real Estate|Properties|Group|Team|Associates|Realtors|Brokerage))\b',
-        r'\b([A-Z][a-zA-Z\s&]{3,40}(?:RE/MAX|Coldwell|Century|Keller|Compass|eXp))\b',
+        # Brokerage information patterns
+        r'(?:Brokered by|Listed by|Courtesy of|Listing provided by|Brokerage)[\s:]+([A-Za-z][^,\n\.]{5,60})',
+        r'([A-Z][a-zA-Z\s&\-]{3,50}(?:Realty|Real Estate|Properties|Group|Team|Associates|Realtors?|Brokerage))',
+        # Popular brokerages
+        r'(RE/MAX[A-Za-z\s&\-]*)',
+        r'(Coldwell Banker[A-Za-z\s&\-]*)',
+        r'(Century 21[A-Za-z\s&\-]*)',
+        r'(Keller Williams[A-Za-z\s&\-]*)',
+        r'(Compass[A-Za-z\s&\-]*)',
+        r'(eXp Realty[A-Za-z\s&\-]*)',
     ]
     
     for pattern in company_patterns:
-        matches = re.findall(pattern, html_text)
+        matches = re.findall(pattern, page_text, re.IGNORECASE)
         for match in matches:
             company = match.strip()
-            if (len(company) > 5 and len(company) < 80 and 
-                not any(word.lower() in company.lower() for word in 
-                       ['loading', 'request', 'contact', 'today', 'early', 'button', 'click', 'undefined'])):
-                agent_info['companies'].append(company)
+            if is_valid_company_name(company):
+                companies.add(company)
+                log_message(f"   🏢 Found company: {company}")
     
-    # Remove duplicates
-    agent_info['names'] = list(set(agent_info['names']))
+    # 6. Look for names in JSON data (Zillow often embeds data in script tags)
+    script_tags = soup.find_all('script', type='application/json')
+    for script in script_tags:
+        try:
+            data = json.loads(script.string or '{}')
+            names_from_json = extract_names_from_json(data)
+            for name in names_from_json:
+                if is_valid_agent_name(name):
+                    agent_names.add(name)
+                    log_message(f"   📝 Found agent in JSON data: {name}")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+    
+    # Convert sets to lists and clean up
+    agent_info['names'] = list(agent_names)
+    agent_info['companies'] = list(companies)
+    
+    # Remove duplicates and clean up
+    agent_info['names'] = list(set([name.strip() for name in agent_info['names'] if name.strip()]))
     agent_info['phones'] = list(set(agent_info['phones']))
-    agent_info['companies'] = list(set(agent_info['companies']))
+    agent_info['companies'] = list(set([comp.strip() for comp in agent_info['companies'] if comp.strip()]))
     
     return agent_info
+
+
+def extract_names_from_agent_section(text: str) -> List[str]:
+    """Extract names from agent-specific text sections"""
+    names = []
+    
+    # Common name patterns for agents
+    name_patterns = [
+        r'\b([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})\b',  # First Last
+        r'\b([A-Z][a-z]{2,}\s+[A-Z]\.\s+[A-Z][a-z]{2,})\b',  # First M. Last
+        r'\b([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})\b',  # First Middle Last
+        r'\b([A-Z][a-z]{2,}\s+[A-Z][a-z]{1,3}[A-Z][a-z]{2,})\b',  # First McLastname
+    ]
+    
+    for pattern in name_patterns:
+        matches = re.findall(pattern, text)
+        for match in matches:
+            name = match.strip()
+            if len(name) >= 4 and len(name) <= 50:
+                names.append(name)
+    
+    return names
+
+
+def extract_names_from_json(data: any, path: str = "") -> List[str]:
+    """Recursively extract names from JSON data structures"""
+    names = []
+    
+    if isinstance(data, dict):
+        for key, value in data.items():
+            # Look for keys that might contain agent names
+            if any(agent_key in key.lower() for agent_key in ['agent', 'contact', 'name', 'realtor', 'broker']):
+                if isinstance(value, str) and is_valid_agent_name(value):
+                    names.append(value)
+            # Recurse into nested structures
+            names.extend(extract_names_from_json(value, f"{path}.{key}"))
+            
+    elif isinstance(data, list):
+        for i, item in enumerate(data):
+            names.extend(extract_names_from_json(item, f"{path}[{i}]"))
+            
+    elif isinstance(data, str):
+        # Check if string looks like a name
+        if is_valid_agent_name(data):
+            names.append(data)
+    
+    return names
+
+
+def is_valid_agent_name(name: str) -> bool:
+    """Check if extracted text is likely a real estate agent name"""
+    if not name or len(name) < 4 or len(name) > 50:
+        return False
+    
+    # Split into parts
+    parts = name.split()
+    if len(parts) < 2:
+        return False
+    
+    # Property terms that are definitely NOT names (expanded list based on your screenshot)
+    property_terms = {
+        'electric', 'water', 'heater', 'gourmet', 'kitchen', 'corner', 'lot',
+        'high', 'ceilings', 'common', 'wall', 'walls', 'floor', 'floors',
+        'square', 'feet', 'sqft', 'bedroom', 'bathroom', 'garage', 'parking',
+        'pool', 'spa', 'patio', 'yard', 'garden', 'view', 'mountain', 'ocean',
+        'lake', 'river', 'street', 'avenue', 'road', 'drive', 'way', 'place',
+        'court', 'circle', 'lane', 'north', 'south', 'east', 'west',
+        'listing', 'property', 'home', 'house', 'condo', 'apartment',
+        'price', 'sold', 'sale', 'rent', 'lease', 'available', 'coming', 'soon',
+        'new', 'construction', 'built', 'year', 'updated', 'renovated',
+        'granite', 'marble', 'hardwood', 'tile', 'carpet', 'stainless', 'steel',
+        'appliances', 'washer', 'dryer', 'refrigerator', 'dishwasher',
+        'central', 'air', 'heating', 'cooling', 'fireplace', 'balcony',
+        'deck', 'fence', 'landscaping', 'sprinkler', 'security', 'alarm',
+        'single', 'family', 'residence', 'built', 'data', 'photos', 'floor',
+        'plan', 'home', 'save', 'share', 'hide', 'showcase', 'all', 'photos',
+        'for', 'sale', 'beds', 'baths', 'contact', 'request', 'tour'
+    }
+    
+    # Check if any part is a property term
+    for part in parts:
+        if part.lower() in property_terms:
+            return False
+    
+    # Must be alphabetic characters only (except for middle initials)
+    for part in parts:
+        if not (part.replace('.', '').isalpha() and len(part.replace('.', '')) >= 2):
+            return False
+    
+    # Additional validation: first part should look like a first name
+    first_name = parts[0].lower()
+    
+    # Common first names for additional validation
+    common_first_names = {
+        'john', 'jane', 'michael', 'michelle', 'david', 'sarah', 'robert', 'lisa',
+        'william', 'jennifer', 'james', 'mary', 'christopher', 'patricia',
+        'daniel', 'linda', 'matthew', 'elizabeth', 'anthony', 'barbara',
+        'mark', 'susan', 'donald', 'jessica', 'steven', 'helen', 'paul', 'nancy',
+        'andrew', 'betty', 'joshua', 'dorothy', 'kenneth', 'sandra', 'kevin',
+        'donna', 'brian', 'carol', 'george', 'ruth', 'edward', 'sharon',
+        'ronald', 'michelle', 'timothy', 'laura', 'jason', 'sarah', 'jeffrey',
+        'kimberly', 'ryan', 'deborah', 'jacob', 'dorothy', 'gary', 'lisa',
+        'nicholas', 'nancy', 'eric', 'karen', 'jonathan', 'betty', 'stephen',
+        'helen', 'larry', 'sandra', 'justin', 'donna', 'scott', 'carol',
+        'brandon', 'ruth', 'benjamin', 'sharon', 'samuel', 'michelle',
+        'frank', 'laura', 'raymond', 'sarah', 'alexander', 'kimberly',
+        'patrick', 'deborah', 'jack', 'dorothy', 'dennis', 'lisa',
+        'jerry', 'nancy', 'tyler', 'karen', 'aaron', 'betty',
+        'jasmin', 'jasmine', 'alex', 'alexandra', 'chris', 'christina',
+        'mike', 'monica', 'joe', 'joseph', 'tom', 'thomas', 'bob', 'robert'
+    }
+    
+    # If it's a common first name, very likely to be valid
+    if first_name in common_first_names:
+        return True
+    
+    # Check if it follows reasonable name patterns
+    if len(first_name) >= 3 and first_name.isalpha():
+        return True
+    
+    return False
+
+
+def is_valid_company_name(company: str) -> bool:
+    """Check if extracted text is likely a real estate company name"""
+    if not company or len(company) < 5 or len(company) > 80:
+        return False
+    
+    # Remove common false positives
+    bad_terms = [
+        'loading', 'request', 'contact', 'today', 'early', 'button', 'click', 
+        'undefined', 'null', 'error', 'message', 'please', 'thank', 'welcome',
+        'search', 'results', 'found', 'showing', 'page', 'next', 'previous',
+        'photos', 'floor', 'plan', 'home', 'save', 'share', 'hide',
+        'electric water', 'gourmet kitchen', 'corner lot', 'high ceilings'
+    ]
+    
+    company_lower = company.lower()
+    for term in bad_terms:
+        if term in company_lower:
+            return False
+    
+    # Must contain at least one real estate related term
+    real_estate_terms = [
+        'realty', 'real estate', 'properties', 'group', 'team', 'associates',
+        'realtors', 'realtor', 'brokerage', 'broker', 'homes', 'housing',
+        're/max', 'coldwell', 'century', 'keller', 'compass', 'exp', 'sotheby',
+        '24th', 'home'  # Added based on your screenshot showing "24TH&HOME"
+    ]
+    
+    has_re_term = any(term in company_lower for term in real_estate_terms)
+    if not has_re_term:
+        return False
+    
+    return True
 
 async def scrape_property_contacts(url: str, max_retries: int = MAX_RETRIES) -> Optional[Dict]:
     """Scrape contact information from a property URL using ScraperAPI"""
