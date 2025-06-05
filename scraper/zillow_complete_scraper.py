@@ -1,7 +1,10 @@
-import asyncio
-import prisma
-from pyzill_fetch_listings import test_proxy_connection
 
+import asyncio
+from prisma import Prisma
+from prisma.enums import LeadStatus, ContactType, LeadPriority, LeadSource
+from pyzill_fetch_listings import test_proxy_connection
+# Initialize Prisma client
+prisma = Prisma()
 async def minimal_test():
     """Minimal test to check if the script runs on Render."""
     print("Starting minimal test...", "INFO")
