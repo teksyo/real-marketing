@@ -7,9 +7,6 @@ echo "=== Starting Scraper Setup ==="
 echo "Current directory: $(pwd)"
 echo "Python version: $(python3 --version)"
 
-# Navigate to the scraper directory (adjust path as needed)
-cd /opt/render/project/src/scraper
-
 # Create virtual environment if it doesn't exist
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."
