@@ -28,6 +28,8 @@ pip install -r requirements.txt
 # Generate Prisma client
 echo "Generating Prisma client..."
 prisma generate
+prisma migrate deploy
+
 
 # Verify Prisma import works
 echo "Testing Prisma import..."
