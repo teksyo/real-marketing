@@ -32,6 +32,7 @@ prisma generate
 # Verify Prisma import works
 echo "Testing Prisma import..."
 python -c "from prisma import Prisma; print('✓ Prisma import successful')"
+echo $DATABASE_URL && /opt/render/project/src/.venv/bin/python /opt/render/project/src/scraper/test_prisma_connection.py
 
 # Run the scraper
 echo "Starting scraper..."

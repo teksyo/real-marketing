@@ -12,8 +12,8 @@ async def minimal_test():
     try:
         # Test database connection
         print("Testing database connection...")
-        # existing = await prisma.lead.find_unique(where={'zid': "442663676"})
-        # print("Database connection successful!", existing)
+        existing = await prisma.lead.find_unique(where={'zid': "442663676"})
+        print("Database connection successful!", existing)
 
     finally:
         await prisma.disconnect()
