@@ -1,16 +1,24 @@
-from pyzill_fetch_listings import test_proxy_connection
+import asyncio
+from prisma import Prisma
 
-def minimal_test():
-    """Minimal test to check if the script runs and logs execution."""
+# Initialize Prisma client
+prisma = Prisma()
+
+async def minimal_test():
+    """Minimal test to check if the script runs on Render."""
     print("Starting minimal test...")
 
-    # Test proxy connection
-    print("Testing proxy connection...")
-    if test_proxy_connection():
-        print("Proxy connection successful!")
-    else:
-        print("Proxy connection failed!")
+    await prisma.connect()
+    try:
+        # Test database connection
+        print("Testing database connection...")
+        await prisma.lead.find_many(take=1)
+        print("Database connection successful!")
+
+    finally:
+        await prisma.disconnect()
+        print("Disconnected from database.")
 
 if __name__ == "__main__":
-    minimal_test()
+    asyncio.run(minimal_test())
     print("Minimal test completed.")
