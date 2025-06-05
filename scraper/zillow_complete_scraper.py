@@ -1,6 +1,6 @@
 import asyncio
 import prisma
-from frontend.pyzill_fetch_listings import test_proxy_connection
+from pyzill_fetch_listings import test_proxy_connection
 
 async def minimal_test():
     """Minimal test to check if the script runs on Render."""
