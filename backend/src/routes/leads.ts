@@ -655,7 +655,7 @@ router.get('/region/:region', authMiddleware, async (req: Request, res: Response
         region,
         OR: [
           { source: 'ZILLOW' }, // Show all Zillow scraped leads to everyone
-          { createdById: user.id } // Show user's own manually created leads
+          //{ createdById: user.id } // Show user's own manually created leads
         ]
       },
       include: {
