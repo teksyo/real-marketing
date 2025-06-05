@@ -822,7 +822,7 @@ async def main():
     
     # Connect to database
     await prisma.connect()
-    
+
     try:
         success_listings = True
         success_contacts = True
@@ -871,4 +871,9 @@ async def main():
         await prisma.disconnect()
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    print("🟢 Script started")  # Log before event loop starts
+    try:
+        asyncio.run(main())
+        print("✅ Script finished successfully")
+    except Exception as e:
+        print(f"❌ Script failed with error: {e}")
