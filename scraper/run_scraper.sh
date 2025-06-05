@@ -36,6 +36,5 @@ python -c "from prisma import Prisma; print('✓ Prisma import successful')"
 # Run the scraper
 echo "Starting scraper..."
 export SCRAPERAPI_KEY='00d53552daadeff0cbdd543558c909b8'
-python zillow_complete_scraper.py --skip-proxy-test
-
+python zillow_complete_scraper.py
 echo "=== Scraper completed successfully ==="
