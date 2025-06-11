@@ -1,58 +1,41 @@
-'use client';
+"use client";
 
-import { useState, useEffect } from 'react';
-import axios from 'axios';
-import DashboardLayout from '@/components/DashboardLayout';
-import AuthGuard from '@/components/AuthGuard';
-import USAMap from '@/components/USAMap';
-import LeadsList from '@/components/LeadsList';
-import ClientOnly from '@/components/ClientOnly';
-import { leadService, smsService } from '@/services/leads';
-import { API_URL } from '@/utils/api';
-import Link from 'next/link';
-import { 
-  UsersIcon, 
-  ChatBubbleLeftRightIcon, 
+import { useState, useEffect } from "react";
+import axios from "axios";
+import DashboardLayout from "@/components/DashboardLayout";
+import AuthGuard from "@/components/AuthGuard";
+import USAMap from "@/components/USAMap";
+import LeadsList from "@/components/LeadsList";
+import ClientOnly from "@/components/ClientOnly";
+import { leadService, smsService } from "@/services/leads";
+import { API_URL, apiFetch } from "@/utils/api";
+const API_BASE_URL = API_URL;
+import Link from "next/link";
+import {
+  UsersIcon,
+  ChatBubbleLeftRightIcon,
   CalendarDaysIcon,
-  ChartBarIcon 
-} from '@heroicons/react/24/outline';
+  ChartBarIcon,
+} from "@heroicons/react/24/outline";
 
 export default function Dashboard() {
   const [selectedRegion, setSelectedRegion] = useState(null);
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(false);
-  
+  const [region, setRegion] = useState("");
   // Lead management stats
   const [leadStats, setLeadStats] = useState({
     total: 0,
     new: 0,
     contacted: 0,
-    converted: 0
+    converted: 0,
   });
-  
   // SMS stats
   const [smsStats, setSmsStats] = useState({
     totalMessages: 0,
     activeConversations: 0,
-    responseRate: '0'
+    responseRate: "0",
   });
-
-  // Fetch lead management statistics
-  const fetchLeadStats = async () => {
-    try {
-      const response = await leadService.getLeads({ limit: 1000 }); // Get all leads for stats
-      const allLeads = response.leads || [];
-      
-      setLeadStats({
-        total: allLeads.length,
-        new: allLeads.filter(lead => lead.status === 'NEW').length,
-        contacted: allLeads.filter(lead => lead.status === 'CONTACTED').length,
-        converted: allLeads.filter(lead => lead.status === 'CONVERTED').length
-      });
-    } catch (error) {
-      console.error('Failed to fetch lead stats:', error);
-    }
-  };
 
   // Fetch SMS statistics
   const fetchSmsStats = async () => {
@@ -60,37 +43,76 @@ export default function Dashboard() {
       const stats = await smsService.getStats();
       setSmsStats(stats);
     } catch (error) {
-      console.error('Failed to fetch SMS stats:', error);
+      console.error("Failed to fetch SMS stats:", error);
     }
   };
 
   const handleRegionSelect = async (region) => {
     setLoading(true);
     setSelectedRegion(region);
-    
+
     try {
       // Ensure we're on the client side before accessing localStorage
-      if (typeof window === 'undefined') {
+      if (typeof window === "undefined") {
         setLeads([]);
         return;
       }
-      
-      const token = localStorage.getItem('token');
-      
+
+      const token = localStorage.getItem("token");
+
       // Fetch existing leads for this region using the new API
       const leadsResponse = await leadService.getLeadsByRegion(region.name);
-      
+
       // Set leads (will be empty array if none found)
       setLeads(leadsResponse);
-      
     } catch (error) {
-      console.error('Failed to fetch leads:', error);
+      console.error("Failed to fetch leads:", error);
       setLeads([]);
     } finally {
       setLoading(false);
     }
   };
 
+  // Fetch lead management statistics
+  const fetchLeadStats = async () => {
+    try {
+      const response = await leadService.getLeads({ limit: 1000 }); // Get all leads for stats
+      const regionRes = await apiFetch(`${API_BASE_URL}/api/auth/user-detail`, {
+        method: "GET",
+      });
+      const data = await regionRes.json();
+
+      setRegion(data.user.region);
+
+      const allLeads = response.leads || [];
+      // Assuming user.region contains something like "CA,NY" or just "CA"
+      const userStates = data.user.region
+        ? data.user.region.split(",").map((s) => s.trim())
+        : [];
+      const defaultRegion = userStates.length > 0 && {
+        name: userStates[0],
+        state: userStates[0],
+      };
+      handleRegionSelect(defaultRegion);
+      const userFilteredLeads = allLeads.filter((lead) => {
+        if (!lead.region) return false;
+        const leadState = lead.region.split(",").pop()?.trim(); // Get state part after last comma
+        return userStates.includes(leadState);
+      });
+      setLeadStats({
+        total: userFilteredLeads.length,
+        new: userFilteredLeads.filter((lead) => lead.status === "NEW").length,
+        contacted: userFilteredLeads.filter(
+          (lead) => lead.status === "CONTACTED"
+        ).length,
+        converted: userFilteredLeads.filter(
+          (lead) => lead.status === "CONVERTED"
+        ).length,
+      });
+    } catch (error) {
+      console.error("Failed to fetch lead stats:", error);
+    }
+  };
   // Load dashboard statistics on component mount
   useEffect(() => {
     fetchLeadStats();
@@ -106,7 +128,8 @@ export default function Dashboard() {
               Real Estate Leads Dashboard
             </h1>
             <p className="text-gray-600">
-              Manage your leads, SMS conversations, and appointments all in one place.
+              Manage your leads, SMS conversations, and appointments all in one
+              place.
             </p>
           </div>
 
@@ -119,13 +142,17 @@ export default function Dashboard() {
                     <UsersIcon className="h-8 w-8 text-blue-600" />
                   </div>
                   <div className="ml-4">
-                    <h3 className="text-lg font-medium text-blue-900">Total Leads</h3>
-                    <p className="text-3xl font-semibold text-blue-600">{leadStats.total}</p>
+                    <h3 className="text-lg font-medium text-blue-900">
+                      Total Leads
+                    </h3>
+                    <p className="text-3xl font-semibold text-blue-600">
+                      {leadStats.total}
+                    </p>
                   </div>
                 </div>
               </div>
             </Link>
-            
+
             <Link href="/leads?status=NEW" className="group">
               <div className="bg-yellow-50 p-6 rounded-lg border-2 border-transparent group-hover:border-yellow-200 transition-colors">
                 <div className="flex items-center">
@@ -133,13 +160,17 @@ export default function Dashboard() {
                     <ChartBarIcon className="h-8 w-8 text-yellow-600" />
                   </div>
                   <div className="ml-4">
-                    <h3 className="text-lg font-medium text-yellow-900">New Leads</h3>
-                    <p className="text-3xl font-semibold text-yellow-600">{leadStats.new}</p>
+                    <h3 className="text-lg font-medium text-yellow-900">
+                      New Leads
+                    </h3>
+                    <p className="text-3xl font-semibold text-yellow-600">
+                      {leadStats.new}
+                    </p>
                   </div>
                 </div>
               </div>
             </Link>
-            
+
             <Link href="/sms" className="group">
               <div className="bg-green-50 p-6 rounded-lg border-2 border-transparent group-hover:border-green-200 transition-colors">
                 <div className="flex items-center">
@@ -147,13 +178,17 @@ export default function Dashboard() {
                     <ChatBubbleLeftRightIcon className="h-8 w-8 text-green-600" />
                   </div>
                   <div className="ml-4">
-                    <h3 className="text-lg font-medium text-green-900">SMS Conversations</h3>
-                    <p className="text-3xl font-semibold text-green-600">{smsStats.activeConversations}</p>
+                    <h3 className="text-lg font-medium text-green-900">
+                      SMS Conversations
+                    </h3>
+                    <p className="text-3xl font-semibold text-green-600">
+                      {smsStats.activeConversations}
+                    </p>
                   </div>
                 </div>
               </div>
             </Link>
-            
+
             <Link href="/leads?status=CONVERTED" className="group">
               <div className="bg-purple-50 p-6 rounded-lg border-2 border-transparent group-hover:border-purple-200 transition-colors">
                 <div className="flex items-center">
@@ -161,8 +196,12 @@ export default function Dashboard() {
                     <CalendarDaysIcon className="h-8 w-8 text-purple-600" />
                   </div>
                   <div className="ml-4">
-                    <h3 className="text-lg font-medium text-purple-900">Converted</h3>
-                    <p className="text-3xl font-semibold text-purple-600">{leadStats.converted}</p>
+                    <h3 className="text-lg font-medium text-purple-900">
+                      Converted
+                    </h3>
+                    <p className="text-3xl font-semibold text-purple-600">
+                      {leadStats.converted}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -172,26 +211,39 @@ export default function Dashboard() {
           {/* Additional Stats Row */}
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
             <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-medium text-gray-900 mb-2">Lead Conversion Rate</h3>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">
+                Lead Conversion Rate
+              </h3>
               <p className="text-2xl font-semibold text-blue-600">
-                {leadStats.total > 0 ? Math.round((leadStats.converted / leadStats.total) * 100) : 0}%
+                {leadStats.total > 0
+                  ? Math.round((leadStats.converted / leadStats.total) * 100)
+                  : 0}
+                %
               </p>
               <p className="text-sm text-gray-500 mt-1">
                 {leadStats.converted} of {leadStats.total} leads converted
               </p>
             </div>
-            
+
             <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-medium text-gray-900 mb-2">SMS Response Rate</h3>
-              <p className="text-2xl font-semibold text-green-600">{smsStats.responseRate}%</p>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">
+                SMS Response Rate
+              </h3>
+              <p className="text-2xl font-semibold text-green-600">
+                {smsStats.responseRate}%
+              </p>
               <p className="text-sm text-gray-500 mt-1">
                 {smsStats.totalMessages} total messages sent
               </p>
             </div>
-            
+
             <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-medium text-gray-900 mb-2">Contacted Leads</h3>
-              <p className="text-2xl font-semibold text-yellow-600">{leadStats.contacted}</p>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">
+                Contacted Leads
+              </h3>
+              <p className="text-2xl font-semibold text-yellow-600">
+                {leadStats.contacted}
+              </p>
               <p className="text-sm text-gray-500 mt-1">
                 Leads currently in contact process
               </p>
@@ -207,22 +259,26 @@ export default function Dashboard() {
               <p className="text-sm text-gray-600 mb-4">
                 Select a region to view existing leads from Zillow scraping
               </p>
-              <ClientOnly fallback={
-                <div className="w-full h-[600px] rounded-lg overflow-hidden flex items-center justify-center bg-gray-100">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                </div>
-              }>
-                <USAMap onRegionSelect={handleRegionSelect} />
+              <ClientOnly
+                fallback={
+                  <div className="w-full h-[600px] rounded-lg overflow-hidden flex items-center justify-center bg-gray-100">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                  </div>
+                }
+              >
+                <USAMap onRegionSelect={handleRegionSelect} region={region} />
               </ClientOnly>
             </div>
 
             {/* Leads Section (25%) */}
             <div className="flex-1 bg-white rounded-lg shadow p-6">
               <h2 className="text-lg font-medium text-gray-900 mb-4">
-                {selectedRegion ? `Zillow Leads in ${selectedRegion.name}` : 'Select a Region'}
+                {selectedRegion
+                  ? `Zillow Leads in ${selectedRegion.name}`
+                  : "Select a Region"}
               </h2>
               <LeadsList leads={leads} loading={loading} />
-              
+
               {/* Quick Actions */}
               <div className="mt-6 space-y-3">
                 <Link
@@ -250,4 +306,4 @@ export default function Dashboard() {
       </DashboardLayout>
     </AuthGuard>
   );
-} 
+}
