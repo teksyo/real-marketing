@@ -53,19 +53,24 @@ PROXY_PASSWORD = 'K40SClud=esN8jxg9c'
 PROXY_HOST = "gate.decodo.com"
 PROXY_PORT = "10001"
 
-# Rate limiting settings
-LISTINGS_MIN_DELAY = 5
-LISTINGS_MAX_DELAY = 10
-CONTACTS_MIN_DELAY = 3
-CONTACTS_MAX_DELAY = 7
-CONTACTS_BATCH_SIZE = 10
-CONTACTS_BATCH_DELAY = 30
-MAX_RETRIES = 3
+# Rate limiting settings with better timeout handling
+LISTINGS_MIN_DELAY = 3
+LISTINGS_MAX_DELAY = 7
+CONTACTS_MIN_DELAY = 2
+CONTACTS_MAX_DELAY = 5
+CONTACTS_BATCH_SIZE = 5  # Reduced batch size
+CONTACTS_BATCH_DELAY = 15  # Reduced delay
+MAX_RETRIES = 2  # Reduced retries
 
-# Runtime limits
-MAX_LISTINGS_TO_FETCH = 50
-MAX_CONTACTS_TO_PROCESS = 15
-MAX_RUNTIME_MINUTES = 12
+# Runtime limits - More conservative for cron jobs
+MAX_LISTINGS_TO_FETCH = 30  # Reduced
+MAX_CONTACTS_TO_PROCESS = 10  # Reduced
+MAX_RUNTIME_MINUTES = 8  # Reduced for cron job reliability
+
+# Timeout settings
+REQUEST_TIMEOUT = 45  # Reduced from 60
+SCRAPER_TIMEOUT = 40  # Individual scraper timeout
+OPERATION_TIMEOUT = 300  # 5 minutes for any single operation
 
 # Directory for storing debug data
 DATA_DIR = Path("zillow_data")
