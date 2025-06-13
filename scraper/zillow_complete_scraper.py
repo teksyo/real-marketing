@@ -943,9 +943,11 @@ async def main():
             log_message("🎉 Complete scraper finished successfully!")
         else:
             log_message("⚠️  Scraper completed with some issues")
+    except Exception as e:
+        print(f"❌ Scraper completed with some errors: {e}")
         
-    finally:
-        await prisma.disconnect()
+    # finally:
+    #     await prisma.disconnect()
 
 if __name__ == "__main__":
     print("🟢 Script started")  # Log before event loop starts
