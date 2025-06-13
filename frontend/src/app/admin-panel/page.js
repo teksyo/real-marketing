@@ -84,11 +84,15 @@ export default function AdminUsersPage() {
   const [role, setRole] = useState("");
   useEffect(() => {
     const fetchUser = async () => {
-      const res = await apiFetch(`${API_URL}/api/auth/users/me`, {
-        method: "GET",
-      });
-      const data = await res.json();
-      setRole(data.user.role);
+      try {
+        const res = await apiFetch(`${API_URL}/api/auth/users/me`);
+        if (!res.ok) throw new Error(`Status ${res.status}`);
+        const { user } = await res.json();
+        setRole(user?.role ?? "");
+      } catch (err) {
+        console.error("Failed to get current user:", err);
+        setError("Unable to verify user role");
+      }
     };
     fetchUser();
   }, []);
