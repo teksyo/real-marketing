@@ -274,7 +274,11 @@ export default function Dashboard() {
             <div className="flex-1 bg-white rounded-lg shadow p-6">
               <h2 className="text-lg font-medium text-gray-900 mb-4">
                 {selectedRegion
-                  ? `Zillow Leads in ${selectedRegion.name}`
+                  ? `${
+                      selectedRegion.name == "NO"
+                        ? "No region assigned"
+                        : "Zillow Leads in " + selectedRegion.name
+                    }`
                   : "Select a Region"}
               </h2>
               <LeadsList leads={leads} loading={loading} />

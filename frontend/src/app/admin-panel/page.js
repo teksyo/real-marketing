@@ -200,15 +200,24 @@ export default function AdminUsersPage() {
   const handleAddUser = async (e) => {
     e.preventDefault();
     try {
-      const response = await axios.post(`${API_URL}/api/auth/register`, {
-        newUser,
+      const response = await apiFetch(`${API_URL}/api/auth/register`, {
+        method: "POST",
+        body: JSON.stringify(newUser),
       });
-      toast.success("User created successfully!");
-      setShowAddUserModal(false);
-      setNewUser({ email: "", password: "", role: "USER", phoneNumber: "" });
-      fetchUsers(); // Refresh the list
+      if (response.ok) {
+        toast.success("User created successfully!");
+        fetchUsers();
+        setShowAddUserModal(false);
+        setNewUser({ email: "", password: "", role: "USER", phoneNumber: "" });
+        fetchUsers(); // Refresh the list
+      } else {
+        const errorData = await response.json();
+        toast.error(errorData.message || "Failed to add user");
+      }
     } catch (err) {
-      setError(err?.response?.data?.message || "Failed to add user");
+      setError(
+        err?.response?.data?.message || err?.message || "Failed to add user"
+      );
       console.error("Error adding user:", err);
     }
   };
