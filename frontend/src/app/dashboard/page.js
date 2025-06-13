@@ -77,7 +77,7 @@ export default function Dashboard() {
   const fetchLeadStats = async () => {
     try {
       const response = await leadService.getLeads({ limit: 1000 }); // Get all leads for stats
-      const regionRes = await apiFetch(`${API_BASE_URL}/api/auth/user-detail`, {
+      const regionRes = await apiFetch(`${API_BASE_URL}/api/auth/users/me`, {
         method: "GET",
       });
       const data = await regionRes.json();

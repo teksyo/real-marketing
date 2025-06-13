@@ -42,7 +42,7 @@ export default function DashboardLayout({ children }) {
   const [role, setRole] = useState("");
   useEffect(() => {
     const fetchUser = async () => {
-      const res = await apiFetch(`${API_URL}/api/auth/user-detail`, {
+      const res = await apiFetch(`${API_URL}/api/auth/users/me`, {
         method: "GET",
       });
       const data = await res.json();

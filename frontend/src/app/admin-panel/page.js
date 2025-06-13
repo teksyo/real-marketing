@@ -84,7 +84,7 @@ export default function AdminUsersPage() {
   const [role, setRole] = useState("");
   useEffect(() => {
     const fetchUser = async () => {
-      const res = await apiFetch(`${API_URL}/api/auth/user-detail`, {
+      const res = await apiFetch(`${API_URL}/api/auth/users/me`, {
         method: "GET",
       });
       const data = await res.json();
@@ -221,7 +221,7 @@ export default function AdminUsersPage() {
         editingRegions.length > 0 ? editingRegions.join(",") : "";
 
       const response = await apiFetch(
-        `${API_URL}/api/auth/user-update/${selectedUser.id}`,
+        `${API_URL}/api/auth/users/${selectedUser.id}`,
         {
           method: "PUT",
           body: JSON.stringify({ region: regionsString }),
@@ -265,7 +265,7 @@ export default function AdminUsersPage() {
 
     try {
       const response = await apiFetch(
-        `${API_URL}/api/auth/user-delete/${selectedDelUser.id}`,
+        `${API_URL}/api/auth/users/${selectedDelUser.id}`,
         {
           method: "DELETE",
         }
