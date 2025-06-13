@@ -954,7 +954,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
         print("✅ Script finished successfully")
-        prisma.disconnect()
         sys.exit(0)
     except Exception as e:
         print(f"❌ Script failed with error: {e}")
+        sys.exit(1)
