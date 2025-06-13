@@ -152,11 +152,12 @@ export default function AdminUsersPage() {
   const fetchUsers = async () => {
     try {
       setLoading(true);
-      const response = await apiFetch(`${API_URL}/api/auth/users`, {
-        method: "GET",
-      });
-      const data = await response.json();
 
+      const response = await apiFetch(`${API_URL}/api/auth/users`);
+      if (!response.ok) {
+        throw new Error(`Status ${response.status}`);
+      }
+      const data = await response.json();
       // Apply client-side filtering since the API might not support all filters
       let filteredUsers = data.users || data || [];
 
