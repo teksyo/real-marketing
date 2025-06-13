@@ -956,3 +956,5 @@ if __name__ == "__main__":
         print("✅ Script finished successfully")
     except Exception as e:
         print(f"❌ Script failed with error: {e}")
+    finally:
+        sys.exit(0)
