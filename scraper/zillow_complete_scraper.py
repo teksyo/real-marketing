@@ -882,12 +882,11 @@ async def process_zillow_contacts() -> bool:
         return False
 
 # ================== MAIN FUNCTION ==================
-
 async def main():
     parser = argparse.ArgumentParser(description='Complete Zillow Scraper - Listings + Contacts')
     parser.add_argument('--listings-only', action='store_true', help='Only fetch listings')
     parser.add_argument('--contacts-only', action='store_true', help='Only extract contacts')
-    parser.add_argument('--skip-contacts', action='store_true', help='Fetch listings but skip contacts')
+    parser.add_argument('--skip-contacts', action='store_true', help='Skip contacts')
     parser.add_argument('--skip-proxy-test', action='store_true', help='Skip proxy test (for production)')
     args = parser.parse_args()
     
@@ -898,7 +897,12 @@ async def main():
     ensure_data_directory()
     
     # Connect to database
-    await prisma.connect()
+    try:
+        await prisma.connect()
+        log_message("✅ Database connected successfully")
+    except Exception as e:
+        log_message(f"❌ Database connection failed: {e}")
+        raise
 
     try:
         success_listings = True
@@ -909,7 +913,12 @@ async def main():
             log_message("=" * 50)
             log_message("STEP 1: FETCHING LISTINGS")
             log_message("=" * 50)
-            success_listings = await fetch_zillow_listings(skip_proxy_test=args.skip_proxy_test)
+            try:
+                success_listings = await fetch_zillow_listings(skip_proxy_test=args.skip_proxy_test)
+                log_message(f"✅ Listings fetch completed: {'Success' if success_listings else 'Failed'}")
+            except Exception as e:
+                log_message(f"❌ Error in fetch_zillow_listings: {e}")
+                success_listings = False
             
             if not success_listings:
                 log_message("⚠️  Listings fetch failed, but continuing...")
@@ -924,7 +933,12 @@ async def main():
                 log_message("❌ SCRAPERAPI_KEY not set, skipping contacts")
                 success_contacts = False
             else:
-                success_contacts = await process_zillow_contacts()
+                try:
+                    success_contacts = await process_zillow_contacts()
+                    log_message(f"✅ Contacts processing completed: {'Success' if success_contacts else 'Failed'}")
+                except Exception as e:
+                    log_message(f"❌ Error in process_zillow_contacts: {e}")
+                    success_contacts = False
         elif args.skip_contacts:
             log_message("⚠️  Contact extraction skipped as requested")
         elif args.listings_only:
@@ -941,20 +955,67 @@ async def main():
         
         if success_listings and success_contacts:
             log_message("🎉 Complete scraper finished successfully!")
+            return True
         else:
             log_message("⚠️  Scraper completed with some issues")
+            return False
+            
     except Exception as e:
-        print(f"❌ Scraper completed with some errors: {e}")
+        log_message(f"❌ Critical error in main execution: {e}")
+        print(f"❌ Critical error in main execution: {e}")  # Also print to stdout
+        import traceback
+        traceback.print_exc()
+        return False
         
-    # finally:
-    #     await prisma.disconnect()
+    finally:
+        try:
+            await prisma.disconnect()
+            log_message("✅ Database disconnected")
+        except Exception as e:
+            log_message(f"⚠️  Error disconnecting database: {e}")
 
 if __name__ == "__main__":
     print("🟢 Script started")  # Log before event loop starts
+    
+    # Add timeout and better error handling
+    import signal
+    
+    def timeout_handler(signum, frame):
+        print("❌ Script timed out!")
+        sys.exit(1)
+    
+    # Set timeout (adjust as needed - 30 minutes here)
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(1800)  # 30 minutes timeout
+    
     try:
-        asyncio.run(main())
-        print("✅ Script finished successfully")
-        sys.exit(0)
+        # Run the main function and capture its return value
+        success = asyncio.run(main())
+        
+        # Cancel the timeout
+        signal.alarm(0)
+        
+        if success:
+            print("✅ Script finished successfully")
+            log_message("✅ Script finished successfully")
+            sys.exit(0)
+        else:
+            print("⚠️  Script finished with issues")
+            log_message("⚠️  Script finished with issues")
+            sys.exit(1)
+            
+    except KeyboardInterrupt:
+        print("❌ Script interrupted by user")
+        sys.exit(130)
+    except asyncio.TimeoutError:
+        print("❌ Script timed out")
+        sys.exit(124)
     except Exception as e:
         print(f"❌ Script failed with error: {e}")
+        # Print full traceback for debugging
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
+    finally:
+        # Ensure timeout is cancelled
+        signal.alarm(0)
