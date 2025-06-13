@@ -19,6 +19,9 @@ import json
 import sys
 import argparse
 import signal
+
+import aiohttp
+from datetime import datetime
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -962,60 +965,101 @@ async def main():
             
     except Exception as e:
         log_message(f"❌ Critical error in main execution: {e}")
-        print(f"❌ Critical error in main execution: {e}")  # Also print to stdout
+        print(f"❌ Critical error in main execution: {e}")
         import traceback
         traceback.print_exc()
         return False
         
     finally:
         try:
-            # await prisma.disconnect()
+            # Force close all aiohttp connections
+            await asyncio.sleep(0.1)  # Give pending operations time to complete
+            
+            # Close all aiohttp connector pools
+            connector_cleanup_tasks = []
+            for obj in gc.get_objects():
+                if isinstance(obj, aiohttp.connector.TCPConnector):
+                    connector_cleanup_tasks.append(obj.close())
+            
+            if connector_cleanup_tasks:
+                await asyncio.gather(*connector_cleanup_tasks, return_exceptions=True)
+                await asyncio.sleep(0.1)  # Wait for cleanup
+            
+            # Disconnect database
+            await prisma.disconnect()
             log_message("✅ Database disconnected")
+            
+            # Force close any remaining tasks
+            pending_tasks = [task for task in asyncio.all_tasks() if not task.done()]
+            if pending_tasks:
+                log_message(f"⚠️  Cancelling {len(pending_tasks)} pending tasks")
+                for task in pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*pending_tasks, return_exceptions=True)
+            
         except Exception as e:
-            log_message(f"⚠️  Error disconnecting database: {e}")
+            log_message(f"⚠️  Error in cleanup: {e}")
+
+async def cleanup_and_exit():
+    """Force cleanup and exit"""
+    log_message("🧹 Performing final cleanup...")
+    
+    # Cancel all running tasks
+    tasks = [task for task in asyncio.all_tasks() if not task.done()]
+    if tasks:
+        log_message(f"Cancelling {len(tasks)} remaining tasks")
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Force garbage collection
+    import gc
+    gc.collect()
+    
+    log_message("✅ Cleanup completed")
 
 if __name__ == "__main__":
-    print("🟢 Script started")  # Log before event loop starts
+    print("🟢 Script started")
     
-    # Add timeout and better error handling
-    import signal
-    
-    def timeout_handler(signum, frame):
-        print("❌ Script timed out!")
-        sys.exit(1)
-    
-    # Set timeout (adjust as needed - 30 minutes here)
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(1800)  # 30 minutes timeout
+    # For Render cron jobs, we need aggressive cleanup
+    import gc
     
     try:
-        # Run the main function and capture its return value
+        # Run the main function
         success = asyncio.run(main())
         
-        # Cancel the timeout
-        signal.alarm(0)
+        # Force cleanup
+        asyncio.run(cleanup_and_exit())
         
         if success:
             print("✅ Script finished successfully")
             log_message("✅ Script finished successfully")
-            sys.exit(0)
         else:
             print("⚠️  Script finished with issues")
             log_message("⚠️  Script finished with issues")
-            sys.exit(1)
             
-    except KeyboardInterrupt:
-        print("❌ Script interrupted by user")
-        sys.exit(130)
-    except asyncio.TimeoutError:
-        print("❌ Script timed out")
-        sys.exit(124)
     except Exception as e:
         print(f"❌ Script failed with error: {e}")
-        # Print full traceback for debugging
         import traceback
         traceback.print_exc()
-        sys.exit(1)
+    
     finally:
-        # Ensure timeout is cancelled
-        signal.alarm(0)
+        # Force exit - critical for Render cron jobs
+        print("🔚 Forcing script termination")
+        try:
+            # Close any remaining file descriptors
+            import resource
+            max_fd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+            for fd in range(3, min(max_fd, 256)):  # Skip stdin, stdout, stderr
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        except:
+            pass
+        
+        # Force garbage collection
+        gc.collect()
+        
+        # Force exit the process
+        os._exit(0 if 'success' in locals() and success else 1)
