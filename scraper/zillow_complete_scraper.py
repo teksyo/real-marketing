@@ -46,10 +46,10 @@ SCRAPERAPI_URL = "http://api.scraperapi.com"
 # Proxy settings for pyzill
 PROXY_SESSIONS = [
     'user-sp6mbpcybk-session-1-state-us_virginia',
-    # 'user-sp6mbpcybk-session-2-state-us_california', 
-    # 'user-sp6mbpcybk-session-3-state-us_texas',
-    # 'user-sp6mbpcybk-session-4-state-us_florida',
-    # 'user-sp6mbpcybk-session-5-state-us_newyork'
+    'user-sp6mbpcybk-session-2-state-us_california', 
+    'user-sp6mbpcybk-session-3-state-us_texas',
+    'user-sp6mbpcybk-session-4-state-us_florida',
+    'user-sp6mbpcybk-session-5-state-us_newyork'
 ]
 PROXY_PASSWORD = 'K40SClud=esN8jxg9c'
 PROXY_HOST = "gate.decodo.com"
