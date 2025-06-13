@@ -211,7 +211,6 @@ export default function AdminUsersPage() {
       });
       if (response.ok) {
         toast.success("User created successfully!");
-        fetchUsers();
         setShowAddUserModal(false);
         setNewUser({ email: "", password: "", role: "USER", phoneNumber: "" });
         fetchUsers(); // Refresh the list
