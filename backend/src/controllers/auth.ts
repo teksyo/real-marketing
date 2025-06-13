@@ -27,7 +27,7 @@ export const register = async (req: Request, res: Response) => {
       email,
       password: hashed,
       role,
-      region: region || "US", // Default to "US" if region is undefined or falsy
+      region: region || "NO", // Default to "US" if region is undefined or falsy
       ...(phoneNumber && { phoneNumber }),
     },
   });

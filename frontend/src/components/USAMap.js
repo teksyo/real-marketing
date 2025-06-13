@@ -140,8 +140,12 @@ const USAMap = ({ onRegionSelect, region }) => {
         );
         const data = await res.json();
 
-        if (!region) return;
-
+        if (region === "US") {
+          setFilteredGeojson(data);
+          return;
+        } else if (!region || region === "NO") {
+          return;
+        }
         const regionArray = region
           .split(",")
           .map((r) => r.trim().toUpperCase());
