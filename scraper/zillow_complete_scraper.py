@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Complete Zillow Scraper - Unified Script
+Complete Zillow Scraper - Unified Script with Timeout Protection
 Handles both property listing fetch and contact extraction in one file.
 
 Usage:
@@ -18,10 +18,12 @@ import requests
 import json
 import sys
 import argparse
+import signal
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 # Database and enums
 from prisma import Prisma
@@ -44,38 +46,90 @@ SCRAPERAPI_URL = "http://api.scraperapi.com"
 # Proxy settings for pyzill
 PROXY_SESSIONS = [
     'user-sp6mbpcybk-session-1-state-us_virginia',
-    'user-sp6mbpcybk-session-2-state-us_california', 
-    'user-sp6mbpcybk-session-3-state-us_texas',
-    'user-sp6mbpcybk-session-4-state-us_florida',
-    'user-sp6mbpcybk-session-5-state-us_newyork'
+    # 'user-sp6mbpcybk-session-2-state-us_california', 
+    # 'user-sp6mbpcybk-session-3-state-us_texas',
+    # 'user-sp6mbpcybk-session-4-state-us_florida',
+    # 'user-sp6mbpcybk-session-5-state-us_newyork'
 ]
 PROXY_PASSWORD = 'K40SClud=esN8jxg9c'
 PROXY_HOST = "gate.decodo.com"
 PROXY_PORT = "7000"
 
-# Rate limiting settings
-LISTINGS_MIN_DELAY = 5
-LISTINGS_MAX_DELAY = 10
-CONTACTS_MIN_DELAY = 3
-CONTACTS_MAX_DELAY = 7
-CONTACTS_BATCH_SIZE = 10
-CONTACTS_BATCH_DELAY = 30
-MAX_RETRIES = 3
+# Rate limiting settings with better timeout handling
+LISTINGS_MIN_DELAY = 3
+LISTINGS_MAX_DELAY = 7
+CONTACTS_MIN_DELAY = 2
+CONTACTS_MAX_DELAY = 5
+CONTACTS_BATCH_SIZE = 5  # Reduced batch size
+CONTACTS_BATCH_DELAY = 15  # Reduced delay
+MAX_RETRIES = 2  # Reduced retries
 
-# Runtime limits
-MAX_LISTINGS_TO_FETCH = 50
-MAX_CONTACTS_TO_PROCESS = 15
-MAX_RUNTIME_MINUTES = 12
+# Runtime limits - More conservative for cron jobs
+MAX_LISTINGS_TO_FETCH = 30  # Reduced
+MAX_CONTACTS_TO_PROCESS = 10  # Reduced
+MAX_RUNTIME_MINUTES = 8  # Reduced for cron job reliability
+
+# Timeout settings
+REQUEST_TIMEOUT = 45  # Reduced from 60
+SCRAPER_TIMEOUT = 40  # Individual scraper timeout
+OPERATION_TIMEOUT = 300  # 5 minutes for any single operation
 
 # Directory for storing debug data
 DATA_DIR = Path("zillow_data")
 
+# Global timeout tracker
+class TimeoutTracker:
+    def __init__(self, max_runtime_minutes: int):
+        self.start_time = datetime.now()
+        self.max_runtime = timedelta(minutes=max_runtime_minutes)
+        self.should_stop = False
+    
+    def is_timeout(self) -> bool:
+        return datetime.now() - self.start_time >= self.max_runtime
+    
+    def remaining_minutes(self) -> float:
+        elapsed = datetime.now() - self.start_time
+        remaining = self.max_runtime - elapsed
+        return max(0, remaining.total_seconds() / 60)
+
+timeout_tracker = TimeoutTracker(MAX_RUNTIME_MINUTES)
+
+# ================== TIMEOUT UTILITIES ==================
+
+def timeout_handler(signum, frame):
+    """Signal handler for timeouts"""
+    log_message("⚠️  Operation timeout - forcing exit")
+    timeout_tracker.should_stop = True
+    raise TimeoutError("Operation timed out")
+
+def setup_signal_handlers():
+    """Setup signal handlers for graceful shutdown"""
+    signal.signal(signal.SIGALRM, timeout_handler)
+
+async def run_with_timeout(coro, timeout_seconds: int):
+    """Run coroutine with timeout protection"""
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        log_message(f"⚠️  Operation timed out after {timeout_seconds} seconds")
+        return None
+
+def run_sync_with_timeout(func, timeout_seconds: int, *args, **kwargs):
+    """Run synchronous function with timeout protection"""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        try:
+            future = executor.submit(func, *args, **kwargs)
+            return future.result(timeout=timeout_seconds)
+        except FutureTimeoutError:
+            log_message(f"⚠️  Sync operation timed out after {timeout_seconds} seconds")
+            return None
+
 # ================== UTILITY FUNCTIONS ==================
 
 def log_message(message: str):
-    """Print timestamped log message"""
+    """Print timestamped log message with flush"""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{timestamp}] {message}")
+    print(f"[{timestamp}] {message}", flush=True)  # Added flush for immediate output
 
 def ensure_data_directory():
     """Ensure the data directory exists"""
@@ -96,24 +150,30 @@ def get_random_proxy():
     return pyzill.parse_proxy(PROXY_HOST, PROXY_PORT, session, PROXY_PASSWORD)
 
 def test_proxy_connection():
-    """Test if the proxy connection is working"""
+    """Test if the proxy connection is working with timeout"""
     log_message("Testing proxy connection...")
     try:
         url = 'https://ip.decodo.com/json'
         username = 'user-sp6mbpcybk-session-1-state-us_virginia'
         password = 'K40SClud=esN8jxg9c'
         proxy = pyzill.parse_proxy("gate.decodo.com", "7000", username, password)
-        result = requests.get(url, proxies={
-            'http': proxy,
-            'https': proxy
-        }, verify=False, timeout=30)
         
-        if result.status_code == 200:
+        # Use timeout for proxy test
+        result = run_sync_with_timeout(
+            requests.get, 
+            20,  # 20 second timeout
+            url, 
+            proxies={'http': proxy, 'https': proxy}, 
+            verify=False, 
+            timeout=15
+        )
+        
+        if result and result.status_code == 200:
             ip_data = result.json()
             log_message(f"✅ Proxy connection successful! IP: {ip_data.get('proxy', {}).get('ip')}")
             return True
         else:
-            log_message(f"❌ Proxy test failed with status code: {result.status_code}")
+            log_message(f"❌ Proxy test failed")
             return False
     except Exception as e:
         log_message(f"❌ Proxy test failed: {str(e)}")
@@ -124,13 +184,23 @@ def test_proxy_connection():
 async def save_listing_to_db(listing: Dict) -> tuple[str, Optional[int]]:
     """Save a listing to the database and return status and lead ID"""
     try:
+        # Add timeout check
+        if timeout_tracker.is_timeout():
+            return "timeout", None
+            
         zpid = str(listing.get('zpid', ''))
         if not zpid:
             return "error", None
             
-        # Check if listing already exists
-        existing = await prisma.lead.find_unique(where={'zid': zpid})
-        if existing:
+        # Check if listing already exists with timeout
+        existing = await run_with_timeout(
+            prisma.lead.find_unique(where={'zid': zpid}),
+            10  # 10 second timeout for DB operation
+        )
+        
+        if existing is None:  # Timeout occurred
+            return "timeout", None
+        elif existing:  # Record exists
             return "exists", existing.id
             
         # Prepare listing data
@@ -153,7 +223,14 @@ async def save_listing_to_db(listing: Dict) -> tuple[str, Optional[int]]:
             'contactFetchAttempts': 0
         }
         
-        new_lead = await prisma.lead.create(data=listing_data)
+        new_lead = await run_with_timeout(
+            prisma.lead.create(data=listing_data),
+            10  # 10 second timeout for DB operation
+        )
+        
+        if new_lead is None:
+            return "timeout", None
+        
         return "created", new_lead.id
         
     except Exception as e:
@@ -163,13 +240,22 @@ async def save_listing_to_db(listing: Dict) -> tuple[str, Optional[int]]:
         return "error", None
 
 async def fetch_zillow_listings(skip_proxy_test: bool = False) -> bool:
-    """Fetch listings from Zillow using pyzill"""
+    """Fetch listings from Zillow using pyzill with timeout protection"""
     log_message("🏠 Starting Zillow listings fetch...")
     
     try:
-        # Test proxy connection (unless skipped)
+        # Check global timeout
+        if timeout_tracker.is_timeout():
+            log_message("⚠️  Global timeout reached, skipping listings")
+            return False
+        
+        # Test proxy connection (unless skipped) with timeout
         if not skip_proxy_test:
-            if not test_proxy_connection():
+            proxy_test_result = run_sync_with_timeout(test_proxy_connection, 30)
+            if proxy_test_result is None:
+                log_message("❌ Proxy test timed out")
+                return False
+            elif not proxy_test_result:
                 log_message("Failed to establish proxy connection. Trying without proxy...")
         else:
             log_message("⚠️  Skipping proxy connection test")
@@ -181,43 +267,52 @@ async def fetch_zillow_listings(skip_proxy_test: bool = False) -> bool:
         proxy_url = get_random_proxy()
         log_message("Using proxy for listings fetch...")
         
-        try:
-            response = pyzill.for_sale(
-                pagination=1,
-                search_value="",
-                min_beds=None,
-                max_beds=None,
-                min_bathrooms=None,
-                max_bathrooms=None,
-                min_price=None,
-                max_price=None,
-                ne_lat=bounds["north"],
-                ne_long=bounds["east"],
-                sw_lat=bounds["south"],
-                sw_long=bounds["west"],
-                zoom_value=5,
-                proxy_url=proxy_url
-            )
-        except Exception as proxy_error:
-            log_message(f"⚠️  Proxy failed: {proxy_error}")
-            log_message("🔄 Trying without proxy...")
-            
-            response = pyzill.for_sale(
-                pagination=1,
-                search_value="",
-                min_beds=None,
-                max_beds=None,
-                min_bathrooms=None,
-                max_bathrooms=None,
-                min_price=None,
-                max_price=None,
-                ne_lat=bounds["north"],
-                ne_long=bounds["east"],
-                sw_lat=bounds["south"],
-                sw_long=bounds["west"],
-                zoom_value=5,
-                proxy_url=None
-            )
+        # Wrap pyzill call with timeout
+        def fetch_listings():
+            try:
+                return pyzill.for_sale(
+                    pagination=1,
+                    search_value="",
+                    min_beds=None,
+                    max_beds=None,
+                    min_bathrooms=None,
+                    max_bathrooms=None,
+                    min_price=None,
+                    max_price=None,
+                    ne_lat=bounds["north"],
+                    ne_long=bounds["east"],
+                    sw_lat=bounds["south"],
+                    sw_long=bounds["west"],
+                    zoom_value=5,
+                    proxy_url=proxy_url
+                )
+            except Exception as proxy_error:
+                log_message(f"⚠️  Proxy failed: {proxy_error}")
+                log_message("🔄 Trying without proxy...")
+                
+                return pyzill.for_sale(
+                    pagination=1,
+                    search_value="",
+                    min_beds=None,
+                    max_beds=None,
+                    min_bathrooms=None,
+                    max_bathrooms=None,
+                    min_price=None,
+                    max_price=None,
+                    ne_lat=bounds["north"],
+                    ne_long=bounds["east"],
+                    sw_lat=bounds["south"],
+                    sw_long=bounds["west"],
+                    zoom_value=5,
+                    proxy_url=None
+                )
+
+        # Run with timeout
+        response = run_sync_with_timeout(fetch_listings, 60)  # 60 second timeout for listings fetch
+        
+        if response is None:
+            log_message("❌ Listings fetch timed out")
+            return False
 
         if not response or not isinstance(response, dict):
             log_message("❌ No valid response received from Zillow")
@@ -237,12 +332,18 @@ async def fetch_zillow_listings(skip_proxy_test: bool = False) -> bool:
             
         log_message(f"📊 Found {len(results)} listings")
         
-        # Process each listing
+        # Process each listing with timeout checks
         new_count = 0
         existing_count = 0
         error_count = 0
+        timeout_count = 0
         
         for idx, result in enumerate(results[:MAX_LISTINGS_TO_FETCH]):
+            # Check timeout before processing each listing
+            if timeout_tracker.is_timeout():
+                log_message(f"⚠️  Global timeout reached, stopping at listing {idx}")
+                break
+                
             try:
                 if not isinstance(result, dict):
                     error_count += 1
@@ -256,6 +357,10 @@ async def fetch_zillow_listings(skip_proxy_test: bool = False) -> bool:
                 elif status == "exists":
                     existing_count += 1
                     log_message(f"📄 Listing already exists {idx+1}/{len(results)}")
+                elif status == "timeout":
+                    timeout_count += 1
+                    log_message(f"⚠️  Timeout processing listing {idx+1}/{len(results)}")
+                    break  # Stop on timeout
                 else:
                     error_count += 1
                     
@@ -263,12 +368,17 @@ async def fetch_zillow_listings(skip_proxy_test: bool = False) -> bool:
                 log_message(f"Error processing listing: {str(e)}")
                 error_count += 1
                 continue
+            
+            # Add small delay between listings
+            if idx < len(results) - 1:
+                await asyncio.sleep(random.uniform(0.5, 1.5))
         
         log_message(f"📊 Listings Summary:")
         log_message(f"- Total found: {len(results)}")
         log_message(f"- New leads: {new_count}")
         log_message(f"- Already exists: {existing_count}")
         log_message(f"- Errors: {error_count}")
+        log_message(f"- Timeouts: {timeout_count}")
         
         return True
                 
@@ -322,158 +432,152 @@ def extract_phone_numbers(html_content: str) -> List[str]:
     return list(phone_numbers)
 
 def extract_agent_info(soup: BeautifulSoup) -> Dict[str, any]:
-    """Extract agent information from Zillow property page HTML"""
+    """Extract agent information from Zillow property page HTML with timeout protection"""
     agent_info = {'names': [], 'phones': [], 'companies': []}
     
-    # Extract phone numbers from entire page
-    phones = extract_phone_numbers(str(soup))
-    agent_info['phones'].extend(phones)
-    
-    # Zillow-specific agent information extraction based on the screenshot structure
-    agent_names = set()
-    companies = set()
-    
-    # 1. Look for "Listed by" section (visible in your screenshot)
-    listed_by_patterns = [
-        # Direct "Listed by" text followed by name
-        r'Listed by\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-        r'Listed by\s*\n\s*([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-    ]
-    
-    page_text = soup.get_text()
-    for pattern in listed_by_patterns:
-        matches = re.findall(pattern, page_text, re.MULTILINE | re.IGNORECASE)
-        for match in matches:
-            name = match.strip()
-            if is_valid_agent_name(name):
-                agent_names.add(name)
-                log_message(f"   📝 Found agent via 'Listed by': {name}")
-    
-    # 2. Look for agent profile sections with specific Zillow selectors
-    zillow_agent_selectors = [
-        # Common Zillow agent container selectors
-        '[data-testid*="agent"]',
-        '[data-testid*="listing-agent"]',
-        '[data-testid*="contact"]',
-        '.agent-profile',
-        '.listing-agent',
-        '.agent-info',
-        '.contact-info',
-        '[class*="agent"]',
-        '[class*="realtor"]',
-        # Zillow-specific attribution selectors
-        '[data-testid="attribution-AGENT"]',
-        '[data-testid="attribution-BROKER"]',
-        '[data-testid="attribution-LISTING_OFFICE"]',
-        # Profile card selectors (based on screenshot structure)
-        '.profile-card',
-        '.agent-card',
-        '[class*="profile"]',
-        '[class*="card"]'
-    ]
-    
-    for selector in zillow_agent_selectors:
-        elements = soup.select(selector)
-        for element in elements:
-            text = element.get_text(strip=True)
-            # Extract names from agent sections
-            names = extract_names_from_agent_section(text)
-            for name in names:
-                if is_valid_agent_name(name):
-                    agent_names.add(name)
-                    log_message(f"   📝 Found agent via selector '{selector}': {name}")
-    
-    # 3. Look for specific text patterns around contact buttons
-    contact_button_patterns = [
-        r'Contact\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-        r'Call\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-        r'Text\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-        r'Email\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-    ]
-    
-    for pattern in contact_button_patterns:
-        matches = re.findall(pattern, page_text, re.MULTILINE | re.IGNORECASE)
-        for match in matches:
-            name = match.strip()
-            if is_valid_agent_name(name):
-                agent_names.add(name)
-                log_message(f"   📝 Found agent via contact pattern: {name}")
-    
-    # 4. Look for names in proximity to phone numbers (within 300 characters)
-    html_content = str(soup)
-    for phone in phones:
-        phone_clean = re.sub(r'[^\d]', '', phone)
+    try:
+        # Extract phone numbers from entire page
+        phones = extract_phone_numbers(str(soup))
+        agent_info['phones'].extend(phones)
         
-        # Find all occurrences of this phone number
-        phone_patterns = [
-            re.escape(phone),
-            re.escape(phone_clean),
-            phone_clean[:3] + r'[-.\s]*' + phone_clean[3:6] + r'[-.\s]*' + phone_clean[6:],
+        # Zillow-specific agent information extraction
+        agent_names = set()
+        companies = set()
+        
+        # 1. Look for "Listed by" section
+        listed_by_patterns = [
+            r'Listed by\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+            r'Listed by\s*\n\s*([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
         ]
         
-        for pattern in phone_patterns:
-            for match in re.finditer(pattern, html_content, re.IGNORECASE):
-                # Get context around phone number
-                start = max(0, match.start() - 300)
-                end = min(len(html_content), match.end() + 300)
-                context = html_content[start:end]
-                
-                # Parse context and extract names
-                context_soup = BeautifulSoup(context, 'html.parser')
-                context_text = context_soup.get_text()
-                
-                names = extract_names_from_agent_section(context_text)
+        page_text = soup.get_text()
+        for pattern in listed_by_patterns:
+            matches = re.findall(pattern, page_text, re.MULTILINE | re.IGNORECASE)
+            for match in matches:
+                name = match.strip()
+                if is_valid_agent_name(name):
+                    agent_names.add(name)
+                    log_message(f"   📝 Found agent via 'Listed by': {name}")
+        
+        # 2. Look for agent profile sections with specific Zillow selectors
+        zillow_agent_selectors = [
+            '[data-testid*="agent"]',
+            '[data-testid*="listing-agent"]',
+            '[data-testid*="contact"]',
+            '.agent-profile',
+            '.listing-agent',
+            '.agent-info',
+            '.contact-info',
+            '[class*="agent"]',
+            '[class*="realtor"]',
+            '[data-testid="attribution-AGENT"]',
+            '[data-testid="attribution-BROKER"]',
+            '[data-testid="attribution-LISTING_OFFICE"]',
+            '.profile-card',
+            '.agent-card',
+            '[class*="profile"]',
+            '[class*="card"]'
+        ]
+        
+        for selector in zillow_agent_selectors:
+            elements = soup.select(selector)
+            for element in elements:
+                text = element.get_text(strip=True)
+                names = extract_names_from_agent_section(text)
                 for name in names:
                     if is_valid_agent_name(name):
                         agent_names.add(name)
-                        log_message(f"   📝 Found agent near phone {phone}: {name}")
-    
-    # 5. Look for company/brokerage information
-    company_patterns = [
-        # Brokerage information patterns
-        r'(?:Brokered by|Listed by|Courtesy of|Listing provided by|Brokerage)[\s:]+([A-Za-z][^,\n\.]{5,60})',
-        r'([A-Z][a-zA-Z\s&\-]{3,50}(?:Realty|Real Estate|Properties|Group|Team|Associates|Realtors?|Brokerage))',
-        # Popular brokerages
-        r'(RE/MAX[A-Za-z\s&\-]*)',
-        r'(Coldwell Banker[A-Za-z\s&\-]*)',
-        r'(Century 21[A-Za-z\s&\-]*)',
-        r'(Keller Williams[A-Za-z\s&\-]*)',
-        r'(Compass[A-Za-z\s&\-]*)',
-        r'(eXp Realty[A-Za-z\s&\-]*)',
-    ]
-    
-    for pattern in company_patterns:
-        matches = re.findall(pattern, page_text, re.IGNORECASE)
-        for match in matches:
-            company = match.strip()
-            if is_valid_company_name(company):
-                companies.add(company)
-                log_message(f"   🏢 Found company: {company}")
-    
-    # 6. Look for names in JSON data (Zillow often embeds data in script tags)
-    script_tags = soup.find_all('script', type='application/json')
-    for script in script_tags:
-        try:
-            data = json.loads(script.string or '{}')
-            names_from_json = extract_names_from_json(data)
-            for name in names_from_json:
+                        log_message(f"   📝 Found agent via selector '{selector}': {name}")
+        
+        # 3. Look for specific text patterns around contact buttons
+        contact_button_patterns = [
+            r'Contact\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+            r'Call\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+            r'Text\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+            r'Email\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+        ]
+        
+        for pattern in contact_button_patterns:
+            matches = re.findall(pattern, page_text, re.MULTILINE | re.IGNORECASE)
+            for match in matches:
+                name = match.strip()
                 if is_valid_agent_name(name):
                     agent_names.add(name)
-                    log_message(f"   📝 Found agent in JSON data: {name}")
-        except (json.JSONDecodeError, AttributeError):
-            continue
-    
-    # Convert sets to lists and clean up
-    agent_info['names'] = list(agent_names)
-    agent_info['companies'] = list(companies)
-    
-    # Remove duplicates and clean up
-    agent_info['names'] = list(set([name.strip() for name in agent_info['names'] if name.strip()]))
-    agent_info['phones'] = list(set(agent_info['phones']))
-    agent_info['companies'] = list(set([comp.strip() for comp in agent_info['companies'] if comp.strip()]))
-    
-    return agent_info
-
+                    log_message(f"   📝 Found agent via contact pattern: {name}")
+        
+        # 4. Look for names in proximity to phone numbers (limited processing for performance)
+        html_content = str(soup)
+        for phone in phones[:5]:  # Limit to first 5 phones to prevent hanging
+            phone_clean = re.sub(r'[^\d]', '', phone)
+            
+            phone_patterns = [
+                re.escape(phone),
+                re.escape(phone_clean),
+                phone_clean[:3] + r'[-.\s]*' + phone_clean[3:6] + r'[-.\s]*' + phone_clean[6:],
+            ]
+            
+            for pattern in phone_patterns:
+                for match in re.finditer(pattern, html_content, re.IGNORECASE):
+                    start = max(0, match.start() - 300)
+                    end = min(len(html_content), match.end() + 300)
+                    context = html_content[start:end]
+                    
+                    context_soup = BeautifulSoup(context, 'html.parser')
+                    context_text = context_soup.get_text()
+                    
+                    names = extract_names_from_agent_section(context_text)
+                    for name in names:
+                        if is_valid_agent_name(name):
+                            agent_names.add(name)
+                            log_message(f"   📝 Found agent near phone {phone}: {name}")
+        
+        # 5. Look for company/brokerage information
+        company_patterns = [
+            r'(?:Brokered by|Listed by|Courtesy of|Listing provided by|Brokerage)[\s:]+([A-Za-z][^,\n\.]{5,60})',
+            r'([A-Z][a-zA-Z\s&\-]{3,50}(?:Realty|Real Estate|Properties|Group|Team|Associates|Realtors?|Brokerage))',
+            r'(RE/MAX[A-Za-z\s&\-]*)',
+            r'(Coldwell Banker[A-Za-z\s&\-]*)',
+            r'(Century 21[A-Za-z\s&\-]*)',
+            r'(Keller Williams[A-Za-z\s&\-]*)',
+            r'(Compass[A-Za-z\s&\-]*)',
+            r'(eXp Realty[A-Za-z\s&\-]*)',
+        ]
+        
+        for pattern in company_patterns:
+            matches = re.findall(pattern, page_text, re.IGNORECASE)
+            for match in matches:
+                company = match.strip()
+                if is_valid_company_name(company):
+                    companies.add(company)
+                    log_message(f"   🏢 Found company: {company}")
+        
+        # 6. Look for names in JSON data (limited processing)
+        script_tags = soup.find_all('script', type='application/json')[:5]  # Limit to first 5 scripts
+        for script in script_tags:
+            try:
+                data = json.loads(script.string or '{}')
+                names_from_json = extract_names_from_json(data)
+                for name in names_from_json:
+                    if is_valid_agent_name(name):
+                        agent_names.add(name)
+                        log_message(f"   📝 Found agent in JSON data: {name}")
+            except (json.JSONDecodeError, AttributeError):
+                continue
+        
+        # Convert sets to lists and clean up
+        agent_info['names'] = list(agent_names)
+        agent_info['companies'] = list(companies)
+        
+        # Remove duplicates and clean up
+        agent_info['names'] = list(set([name.strip() for name in agent_info['names'] if name.strip()]))
+        agent_info['phones'] = list(set(agent_info['phones']))
+        agent_info['companies'] = list(set([comp.strip() for comp in agent_info['companies'] if comp.strip()]))
+        
+        return agent_info
+        
+    except Exception as e:
+        log_message(f"   ❌ Error extracting agent info: {str(e)}")
+        return {'names': [], 'phones': [], 'companies': []}
 
 def extract_names_from_agent_section(text: str) -> List[str]:
     """Extract names from agent-specific text sections"""
@@ -496,31 +600,35 @@ def extract_names_from_agent_section(text: str) -> List[str]:
     
     return names
 
-
 def extract_names_from_json(data: any, path: str = "") -> List[str]:
     """Recursively extract names from JSON data structures"""
     names = []
     
-    if isinstance(data, dict):
-        for key, value in data.items():
-            # Look for keys that might contain agent names
-            if any(agent_key in key.lower() for agent_key in ['agent', 'contact', 'name', 'realtor', 'broker']):
-                if isinstance(value, str) and is_valid_agent_name(value):
-                    names.append(value)
-            # Recurse into nested structures
-            names.extend(extract_names_from_json(value, f"{path}.{key}"))
-            
-    elif isinstance(data, list):
-        for i, item in enumerate(data):
-            names.extend(extract_names_from_json(item, f"{path}[{i}]"))
-            
-    elif isinstance(data, str):
-        # Check if string looks like a name
-        if is_valid_agent_name(data):
-            names.append(data)
+    try:
+        if isinstance(data, dict):
+            for key, value in data.items():
+                # Look for keys that might contain agent names
+                if any(agent_key in key.lower() for agent_key in ['agent', 'contact', 'name', 'realtor', 'broker']):
+                    if isinstance(value, str) and is_valid_agent_name(value):
+                        names.append(value)
+                # Recurse into nested structures (limited depth)
+                if len(path.split('.')) < 3:  # Limit recursion depth
+                    names.extend(extract_names_from_json(value, f"{path}.{key}"))
+                
+        elif isinstance(data, list):
+            for i, item in enumerate(data[:10]):  # Limit list processing
+                if len(path.split('.')) < 3:  # Limit recursion depth
+                    names.extend(extract_names_from_json(item, f"{path}[{i}]"))
+                
+        elif isinstance(data, str):
+            # Check if string looks like a name
+            if is_valid_agent_name(data):
+                names.append(data)
+                
+    except Exception:
+        pass  # Ignore errors in JSON processing
     
     return names
-
 
 def is_valid_agent_name(name: str) -> bool:
     """Check if extracted text is likely a real estate agent name"""
@@ -532,7 +640,7 @@ def is_valid_agent_name(name: str) -> bool:
     if len(parts) < 2:
         return False
     
-    # Property terms that are definitely NOT names (expanded list based on your screenshot)
+    # Property terms that are definitely NOT names
     property_terms = {
         'electric', 'water', 'heater', 'gourmet', 'kitchen', 'corner', 'lot',
         'high', 'ceilings', 'common', 'wall', 'walls', 'floor', 'floors',
@@ -562,38 +670,7 @@ def is_valid_agent_name(name: str) -> bool:
         if not (part.replace('.', '').isalpha() and len(part.replace('.', '')) >= 2):
             return False
     
-    # Additional validation: first part should look like a first name
-    first_name = parts[0].lower()
-    
-    # Common first names for additional validation
-    common_first_names = {
-        'john', 'jane', 'michael', 'michelle', 'david', 'sarah', 'robert', 'lisa',
-        'william', 'jennifer', 'james', 'mary', 'christopher', 'patricia',
-        'daniel', 'linda', 'matthew', 'elizabeth', 'anthony', 'barbara',
-        'mark', 'susan', 'donald', 'jessica', 'steven', 'helen', 'paul', 'nancy',
-        'andrew', 'betty', 'joshua', 'dorothy', 'kenneth', 'sandra', 'kevin',
-        'donna', 'brian', 'carol', 'george', 'ruth', 'edward', 'sharon',
-        'ronald', 'michelle', 'timothy', 'laura', 'jason', 'sarah', 'jeffrey',
-        'kimberly', 'ryan', 'deborah', 'jacob', 'dorothy', 'gary', 'lisa',
-        'nicholas', 'nancy', 'eric', 'karen', 'jonathan', 'betty', 'stephen',
-        'helen', 'larry', 'sandra', 'justin', 'donna', 'scott', 'carol',
-        'brandon', 'ruth', 'benjamin', 'sharon', 'samuel', 'michelle',
-        'frank', 'laura', 'raymond', 'sarah', 'alexander', 'kimberly',
-        'patrick', 'deborah', 'jack', 'dorothy', 'dennis', 'lisa',
-        'jerry', 'nancy', 'tyler', 'karen', 'aaron', 'betty',
-        'jasmin', 'jasmine', 'alex', 'alexandra', 'chris', 'christina',
-        'mike', 'monica', 'joe', 'joseph', 'tom', 'thomas', 'bob', 'robert'
-    }
-    
-    # If it's a common first name, very likely to be valid
-    if first_name in common_first_names:
-        return True
-    
-    # Check if it follows reasonable name patterns
-    if len(first_name) >= 3 and first_name.isalpha():
-        return True
-    
-    return False
+    return True
 
 
 def is_valid_company_name(company: str) -> bool:
@@ -866,9 +943,11 @@ async def main():
             log_message("🎉 Complete scraper finished successfully!")
         else:
             log_message("⚠️  Scraper completed with some issues")
+    except Exception as e:
+        print(f"❌ Scraper completed with some errors: {e}")
         
-    finally:
-        await prisma.disconnect()
+    # finally:
+    #     await prisma.disconnect()
 
 if __name__ == "__main__":
     print("🟢 Script started")  # Log before event loop starts
@@ -877,3 +956,5 @@ if __name__ == "__main__":
         print("✅ Script finished successfully")
     except Exception as e:
         print(f"❌ Script failed with error: {e}")
+    finally:
+        sys.exit(0)
