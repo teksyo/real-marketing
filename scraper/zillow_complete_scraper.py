@@ -969,7 +969,7 @@ async def main():
         
     finally:
         try:
-            await prisma.disconnect()
+            # await prisma.disconnect()
             log_message("✅ Database disconnected")
         except Exception as e:
             log_message(f"⚠️  Error disconnecting database: {e}")
