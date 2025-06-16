@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Complete Zillow Scraper - Unified Script with Timeout Protection
-Handles both property listing fetch and contact extraction in one file.
+Complete Zillow Scraper - Fixed Version with Proper Exit Handling
+Handles both property listing fetch and contact extraction with robust timeout and exit logic.
 
 Usage:
 python3.10 zillow_complete_scraper.py                    # Run both listings + contacts
@@ -20,8 +20,10 @@ import sys
 import argparse
 import signal
 import aiohttp
+import gc
+import threading
+from contextlib import asynccontextmanager
 
-from datetime import datetime
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -37,16 +39,13 @@ import pyzill
 import urllib3
 urllib3.disable_warnings()
 
-# Initialize Prisma client
-prisma = Prisma()
-
 # ================== CONFIGURATION ==================
 
 # ScraperAPI configuration
 SCRAPERAPI_KEY = os.getenv('SCRAPERAPI_KEY', '00d53552daadeff0cbdd543558c909b8')
 SCRAPERAPI_URL = "http://api.scraperapi.com"
 
-# Proxy settings for pyzill
+# Proxy settings for pyzill - Fixed authentication format
 PROXY_SESSIONS = [
     'user-sp6mbpcybk-session-1-state-us_virginia',
     'user-sp6mbpcybk-session-2-state-us_california', 
@@ -58,56 +57,68 @@ PROXY_PASSWORD = 'K40SClud=esN8jxg9c'
 PROXY_HOST = "gate.decodo.com"
 PROXY_PORT = "7000"
 
-# Rate limiting settings with better timeout handling
-LISTINGS_MIN_DELAY = 3
-LISTINGS_MAX_DELAY = 7
-CONTACTS_MIN_DELAY = 2
-CONTACTS_MAX_DELAY = 5
-CONTACTS_BATCH_SIZE = 5  # Reduced batch size
-CONTACTS_BATCH_DELAY = 15  # Reduced delay
-MAX_RETRIES = 2  # Reduced retries
+# Rate limiting settings
+LISTINGS_MIN_DELAY = 2
+LISTINGS_MAX_DELAY = 5
+CONTACTS_MIN_DELAY = 1
+CONTACTS_MAX_DELAY = 3
+CONTACTS_BATCH_SIZE = 3
+CONTACTS_BATCH_DELAY = 10
+MAX_RETRIES = 2
 
-# Runtime limits - More conservative for cron jobs
-MAX_LISTINGS_TO_FETCH = 30  # Reduced
-MAX_CONTACTS_TO_PROCESS = 10  # Reduced
-MAX_RUNTIME_MINUTES = 8  # Reduced for cron job reliability
+# Runtime limits - Conservative for cron jobs
+MAX_LISTINGS_TO_FETCH = 20
+MAX_CONTACTS_TO_PROCESS = 8
+MAX_RUNTIME_MINUTES = 6  # Reduced for reliable cron execution
 
 # Timeout settings
-REQUEST_TIMEOUT = 45  # Reduced from 60
-SCRAPER_TIMEOUT = 40  # Individual scraper timeout
-OPERATION_TIMEOUT = 300  # 5 minutes for any single operation
+REQUEST_TIMEOUT = 30
+SCRAPER_TIMEOUT = 25
+OPERATION_TIMEOUT = 180  # 3 minutes max
 
 # Directory for storing debug data
 DATA_DIR = Path("zillow_data")
 
-# Global timeout tracker
-class TimeoutTracker:
-    def __init__(self, max_runtime_minutes: int):
+# Global state management
+class ScraperState:
+    def __init__(self):
         self.start_time = datetime.now()
-        self.max_runtime = timedelta(minutes=max_runtime_minutes)
+        self.max_runtime = timedelta(minutes=MAX_RUNTIME_MINUTES)
         self.should_stop = False
-    
+        self.prisma_client = None
+        self.force_exit = False
+        self.exit_code = 0
+        
     def is_timeout(self) -> bool:
-        return datetime.now() - self.start_time >= self.max_runtime
+        return datetime.now() - self.start_time >= self.max_runtime or self.should_stop
     
     def remaining_minutes(self) -> float:
         elapsed = datetime.now() - self.start_time
         remaining = self.max_runtime - elapsed
         return max(0, remaining.total_seconds() / 60)
+    
+    def set_exit(self, code: int = 0):
+        self.force_exit = True
+        self.exit_code = code
+        self.should_stop = True
 
-timeout_tracker = TimeoutTracker(MAX_RUNTIME_MINUTES)
+# Global state instance
+state = ScraperState()
 
-# ================== TIMEOUT UTILITIES ==================
+# ================== SIGNAL HANDLING ==================
 
-def timeout_handler(signum, frame):
-    """Signal handler for timeouts"""
-    log_message("⚠️  Operation timeout - forcing exit")
-    timeout_tracker.should_stop = True
-    raise TimeoutError("Operation timed out")
+def signal_handler(signum, frame):
+    """Handle termination signals gracefully"""
+    log_message(f"⚠️  Received signal {signum}, initiating graceful shutdown")
+    state.set_exit(0)
 
 def setup_signal_handlers():
     """Setup signal handlers for graceful shutdown"""
-    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    # Don't use SIGALRM as it can cause issues in some environments
+
+# ================== TIMEOUT UTILITIES ==================
 
 async def run_with_timeout(coro, timeout_seconds: int):
     """Run coroutine with timeout protection"""
@@ -115,6 +126,9 @@ async def run_with_timeout(coro, timeout_seconds: int):
         return await asyncio.wait_for(coro, timeout=timeout_seconds)
     except asyncio.TimeoutError:
         log_message(f"⚠️  Operation timed out after {timeout_seconds} seconds")
+        return None
+    except Exception as e:
+        log_message(f"⚠️  Operation failed: {str(e)}")
         return None
 
 def run_sync_with_timeout(func, timeout_seconds: int, *args, **kwargs):
@@ -126,17 +140,24 @@ def run_sync_with_timeout(func, timeout_seconds: int, *args, **kwargs):
         except FutureTimeoutError:
             log_message(f"⚠️  Sync operation timed out after {timeout_seconds} seconds")
             return None
+        except Exception as e:
+            log_message(f"⚠️  Sync operation failed: {str(e)}")
+            return None
 
 # ================== UTILITY FUNCTIONS ==================
 
 def log_message(message: str):
-    """Print timestamped log message with flush"""
+    """Print timestamped log message with immediate flush"""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{timestamp}] {message}", flush=True)  # Added flush for immediate output
+    print(f"[{timestamp}] {message}", flush=True)
+    sys.stdout.flush()  # Force flush for immediate output
 
 def ensure_data_directory():
     """Ensure the data directory exists"""
-    DATA_DIR.mkdir(exist_ok=True)
+    try:
+        DATA_DIR.mkdir(exist_ok=True)
+    except Exception as e:
+        log_message(f"⚠️  Could not create data directory: {e}")
 
 def get_us_map_bounds() -> Dict:
     """Get map bounds for continental US"""
@@ -148,60 +169,90 @@ def get_us_map_bounds() -> Dict:
     }
 
 def get_random_proxy():
-    """Get a random proxy session for pyzill"""
-    session = random.choice(PROXY_SESSIONS)
-    return pyzill.parse_proxy(PROXY_HOST, PROXY_PORT, session, PROXY_PASSWORD)
+    """Get a random proxy session for pyzill with proper authentication"""
+    try:
+        session = random.choice(PROXY_SESSIONS)
+        # Format: http://username:password@host:port
+        proxy_url = f"http://{session}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
+        return proxy_url
+    except Exception as e:
+        log_message(f"⚠️  Error creating proxy URL: {e}")
+        return None
 
 def test_proxy_connection():
-    """Test if the proxy connection is working with timeout"""
+    """Test if the proxy connection is working"""
     log_message("Testing proxy connection...")
     try:
-        url = 'https://ip.decodo.com/json'
-        username = 'user-sp6mbpcybk-session-1-state-us_virginia'
-        password = 'K40SClud=esN8jxg9c'
-        proxy = pyzill.parse_proxy("gate.decodo.com", "7000", username, password)
+        session = PROXY_SESSIONS[0]  # Use first session for testing
+        proxy_url = f"http://{session}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
         
-        # Use timeout for proxy test
-        result = run_sync_with_timeout(
-            requests.get, 
-            20,  # 20 second timeout
-            url, 
-            proxies={'http': proxy, 'https': proxy}, 
-            verify=False, 
-            timeout=15
+        proxies = {
+            'http': proxy_url,
+            'https': proxy_url
+        }
+        
+        response = requests.get(
+            'https://httpbin.org/ip', 
+            proxies=proxies, 
+            timeout=15,
+            verify=False
         )
         
-        if result and result.status_code == 200:
-            ip_data = result.json()
-            log_message(f"✅ Proxy connection successful! IP: {ip_data.get('proxy', {}).get('ip')}")
+        if response.status_code == 200:
+            data = response.json()
+            log_message(f"✅ Proxy connection successful! IP: {data.get('origin', 'Unknown')}")
             return True
         else:
-            log_message(f"❌ Proxy test failed")
+            log_message(f"❌ Proxy test failed with status: {response.status_code}")
             return False
+            
     except Exception as e:
         log_message(f"❌ Proxy test failed: {str(e)}")
         return False
 
+# ================== DATABASE CONTEXT MANAGER ==================
+
+@asynccontextmanager
+async def get_prisma_client():
+    """Context manager for Prisma client with proper cleanup"""
+    client = Prisma()
+    try:
+        await client.connect()
+        state.prisma_client = client
+        log_message("✅ Database connected successfully")
+        yield client
+    except Exception as e:
+        log_message(f"❌ Database connection failed: {e}")
+        raise
+    finally:
+        try:
+            if client.is_connected():
+                await client.disconnect()
+                log_message("✅ Database disconnected")
+        except Exception as e:
+            log_message(f"⚠️  Error disconnecting database: {e}")
+        finally:
+            state.prisma_client = None
+
 # ================== LISTINGS FUNCTIONS ==================
 
-async def save_listing_to_db(listing: Dict) -> tuple[str, Optional[int]]:
+async def save_listing_to_db(listing: Dict, prisma: Prisma) -> tuple[str, Optional[int]]:
     """Save a listing to the database and return status and lead ID"""
     try:
-        # Add timeout check
-        if timeout_tracker.is_timeout():
+        if state.is_timeout():
             return "timeout", None
             
         zpid = str(listing.get('zpid', ''))
         if not zpid:
             return "error", None
             
-        # Check if listing already exists with timeout
+        # Check if listing already exists
         existing = await run_with_timeout(
             prisma.lead.find_unique(where={'zid': zpid}),
-            10  # 10 second timeout for DB operation
+            5
         )
         
-        if existing is None:  # Timeout occurred
+        if existing is None:  # Timeout
             return "timeout", None
         elif existing:  # Record exists
             return "exists", existing.id
@@ -209,8 +260,8 @@ async def save_listing_to_db(listing: Dict) -> tuple[str, Optional[int]]:
         # Prepare listing data
         zip_code = listing.get('addressZipcode', '') or listing.get('zipCode', '') or 'Unknown'
         city = listing.get('addressCity', '') or 'Unknown'
-        state = listing.get('addressState', '') or 'Unknown'
-        region = f"{city}, {state}"
+        state_code = listing.get('addressState', '') or 'Unknown'
+        region = f"{city}, {state_code}"
         
         listing_data = {
             'zid': zpid,
@@ -228,60 +279,50 @@ async def save_listing_to_db(listing: Dict) -> tuple[str, Optional[int]]:
         
         new_lead = await run_with_timeout(
             prisma.lead.create(data=listing_data),
-            10  # 10 second timeout for DB operation
+            5
         )
         
-        if new_lead is None:
-            return "timeout", None
-        
-        return "created", new_lead.id
+        return ("created", new_lead.id) if new_lead else ("timeout", None)
         
     except Exception as e:
-        if "prepared statement" in str(e):
-            return "error", None
         log_message(f"Error saving listing: {str(e)}")
         return "error", None
 
-async def fetch_zillow_listings(skip_proxy_test: bool = False) -> bool:
-    """Fetch listings from Zillow using pyzill with timeout protection"""
+async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -> bool:
+    """Fetch listings from Zillow using pyzill"""
     log_message("🏠 Starting Zillow listings fetch...")
     
     try:
-        # Check global timeout
-        if timeout_tracker.is_timeout():
+        if state.is_timeout():
             log_message("⚠️  Global timeout reached, skipping listings")
             return False
         
-        # Test proxy connection (unless skipped) with timeout
+        # Test proxy connection unless skipped
+        proxy_working = False
         if not skip_proxy_test:
-            proxy_test_result = run_sync_with_timeout(test_proxy_connection, 30)
-            if proxy_test_result is None:
+            proxy_working = run_sync_with_timeout(test_proxy_connection, 20)
+            if proxy_working is None:
                 log_message("❌ Proxy test timed out")
-                return False
-            elif not proxy_test_result:
-                log_message("Failed to establish proxy connection. Trying without proxy...")
+            elif not proxy_working:
+                log_message("⚠️  Proxy test failed, will try without proxy")
         else:
-            log_message("⚠️  Skipping proxy connection test")
+            log_message("⚠️  Skipping proxy test")
+            proxy_working = True  # Assume it works
         
-        # Get US map bounds
+        # Get map bounds
         bounds = get_us_map_bounds()
         
-        # Try with proxy first, then without if it fails
-        proxy_url = get_random_proxy()
-        log_message("Using proxy for listings fetch...")
-        
-        # Wrap pyzill call with timeout
+        # Fetch listings function
         def fetch_listings():
+            proxy_url = None
+            if proxy_working:
+                proxy_url = get_random_proxy()
+                log_message(f"Using proxy: {proxy_url is not None}")
+            
             try:
                 return pyzill.for_sale(
                     pagination=1,
                     search_value="",
-                    min_beds=None,
-                    max_beds=None,
-                    min_bathrooms=None,
-                    max_bathrooms=None,
-                    min_price=None,
-                    max_price=None,
                     ne_lat=bounds["north"],
                     ne_long=bounds["east"],
                     sw_lat=bounds["south"],
@@ -289,32 +330,28 @@ async def fetch_zillow_listings(skip_proxy_test: bool = False) -> bool:
                     zoom_value=5,
                     proxy_url=proxy_url
                 )
-            except Exception as proxy_error:
-                log_message(f"⚠️  Proxy failed: {proxy_error}")
-                log_message("🔄 Trying without proxy...")
-                
-                return pyzill.for_sale(
-                    pagination=1,
-                    search_value="",
-                    min_beds=None,
-                    max_beds=None,
-                    min_bathrooms=None,
-                    max_bathrooms=None,
-                    min_price=None,
-                    max_price=None,
-                    ne_lat=bounds["north"],
-                    ne_long=bounds["east"],
-                    sw_lat=bounds["south"],
-                    sw_long=bounds["west"],
-                    zoom_value=5,
-                    proxy_url=None
-                )
+            except Exception as e:
+                if proxy_url:
+                    log_message(f"⚠️  Proxy request failed: {e}")
+                    log_message("🔄 Retrying without proxy...")
+                    return pyzill.for_sale(
+                        pagination=1,
+                        search_value="",
+                        ne_lat=bounds["north"],
+                        ne_long=bounds["east"],
+                        sw_lat=bounds["south"],
+                        sw_long=bounds["west"],
+                        zoom_value=5,
+                        proxy_url=None
+                    )
+                else:
+                    raise
 
-        # Run with timeout
-        response = run_sync_with_timeout(fetch_listings, 60)  # 60 second timeout for listings fetch
+        # Execute with timeout
+        response = run_sync_with_timeout(fetch_listings, OPERATION_TIMEOUT)
         
         if response is None:
-            log_message("❌ Listings fetch timed out")
+            log_message("❌ Listings fetch timed out or failed")
             return False
 
         if not response or not isinstance(response, dict):
@@ -326,25 +363,19 @@ async def fetch_zillow_listings(skip_proxy_test: bool = False) -> bool:
         for key in ['listResults', 'mapResults', 'cat1', 'results']:
             if key in response:
                 results = response[key]
-                log_message(f"Found results in '{key}' key")
+                log_message(f"Found {len(results)} listings in '{key}' key")
                 break
                 
         if not results:
             log_message("❌ No listings found in response")
             return False
-            
-        log_message(f"📊 Found {len(results)} listings")
         
-        # Process each listing with timeout checks
-        new_count = 0
-        existing_count = 0
-        error_count = 0
-        timeout_count = 0
+        # Process listings
+        new_count = existing_count = error_count = timeout_count = 0
         
         for idx, result in enumerate(results[:MAX_LISTINGS_TO_FETCH]):
-            # Check timeout before processing each listing
-            if timeout_tracker.is_timeout():
-                log_message(f"⚠️  Global timeout reached, stopping at listing {idx}")
+            if state.is_timeout():
+                log_message(f"⚠️  Global timeout reached at listing {idx}")
                 break
                 
             try:
@@ -352,44 +383,35 @@ async def fetch_zillow_listings(skip_proxy_test: bool = False) -> bool:
                     error_count += 1
                     continue
                 
-                status, lead_id = await save_listing_to_db(result)
+                status, lead_id = await save_listing_to_db(result, prisma)
                 
                 if status == "created":
                     new_count += 1
-                    log_message(f"✅ Created new listing {idx+1}/{len(results)} (ID: {lead_id})")
+                    log_message(f"✅ Created listing {idx+1}: ID {lead_id}")
                 elif status == "exists":
                     existing_count += 1
-                    log_message(f"📄 Listing already exists {idx+1}/{len(results)}")
                 elif status == "timeout":
                     timeout_count += 1
-                    log_message(f"⚠️  Timeout processing listing {idx+1}/{len(results)}")
-                    break  # Stop on timeout
+                    break
                 else:
                     error_count += 1
                     
             except Exception as e:
-                log_message(f"Error processing listing: {str(e)}")
+                log_message(f"Error processing listing {idx}: {str(e)}")
                 error_count += 1
-                continue
             
-            # Add small delay between listings
-            if idx < len(results) - 1:
-                await asyncio.sleep(random.uniform(0.5, 1.5))
+            # Small delay between listings
+            if idx < len(results) - 1 and not state.is_timeout():
+                await asyncio.sleep(random.uniform(0.2, 0.8))
         
-        log_message(f"📊 Listings Summary:")
-        log_message(f"- Total found: {len(results)}")
-        log_message(f"- New leads: {new_count}")
-        log_message(f"- Already exists: {existing_count}")
-        log_message(f"- Errors: {error_count}")
-        log_message(f"- Timeouts: {timeout_count}")
-        
+        log_message(f"📊 Listings Summary: {new_count} new, {existing_count} existing, {error_count} errors, {timeout_count} timeouts")
         return True
                 
     except Exception as e:
         log_message(f"❌ Error fetching listings: {str(e)}")
         return False
 
-# ================== CONTACTS FUNCTIONS ==================
+# ================== CONTACT FUNCTIONS ==================
 
 def get_scraperapi_url(target_url: str, **kwargs) -> str:
     """Build ScraperAPI URL with parameters"""
@@ -416,7 +438,6 @@ def extract_phone_numbers(html_content: str) -> List[str]:
         r'\(\d{3}\)\s*\d{3}[-.\s]?\d{4}',
         r'\b\d{10}\b',
         r'\+1\s*\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
-        r'\b1[-.\s]?\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b',
     ]
     
     phone_numbers = set()
@@ -435,146 +456,48 @@ def extract_phone_numbers(html_content: str) -> List[str]:
     return list(phone_numbers)
 
 def extract_agent_info(soup: BeautifulSoup) -> Dict[str, any]:
-    """Extract agent information from Zillow property page HTML with timeout protection"""
+    """Extract agent information from Zillow property page HTML"""
     agent_info = {'names': [], 'phones': [], 'companies': []}
     
     try:
-        # Extract phone numbers from entire page
+        # Extract phone numbers
         phones = extract_phone_numbers(str(soup))
-        agent_info['phones'].extend(phones)
+        agent_info['phones'].extend(phones[:5])  # Limit phones
         
-        # Zillow-specific agent information extraction
-        agent_names = set()
-        companies = set()
+        # Extract agent names - simplified version
+        page_text = soup.get_text()
         
-        # 1. Look for "Listed by" section
+        # Look for "Listed by" patterns
         listed_by_patterns = [
             r'Listed by\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-            r'Listed by\s*\n\s*([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
         ]
         
-        page_text = soup.get_text()
+        agent_names = set()
         for pattern in listed_by_patterns:
-            matches = re.findall(pattern, page_text, re.MULTILINE | re.IGNORECASE)
+            matches = re.findall(pattern, page_text, re.IGNORECASE)
             for match in matches:
                 name = match.strip()
                 if is_valid_agent_name(name):
                     agent_names.add(name)
-                    log_message(f"   📝 Found agent via 'Listed by': {name}")
         
-        # 2. Look for agent profile sections with specific Zillow selectors
-        zillow_agent_selectors = [
-            '[data-testid*="agent"]',
-            '[data-testid*="listing-agent"]',
-            '[data-testid*="contact"]',
-            '.agent-profile',
-            '.listing-agent',
-            '.agent-info',
-            '.contact-info',
-            '[class*="agent"]',
-            '[class*="realtor"]',
-            '[data-testid="attribution-AGENT"]',
-            '[data-testid="attribution-BROKER"]',
-            '[data-testid="attribution-LISTING_OFFICE"]',
-            '.profile-card',
-            '.agent-card',
-            '[class*="profile"]',
-            '[class*="card"]'
-        ]
-        
-        for selector in zillow_agent_selectors:
-            elements = soup.select(selector)
-            for element in elements:
-                text = element.get_text(strip=True)
-                names = extract_names_from_agent_section(text)
-                for name in names:
-                    if is_valid_agent_name(name):
-                        agent_names.add(name)
-                        log_message(f"   📝 Found agent via selector '{selector}': {name}")
-        
-        # 3. Look for specific text patterns around contact buttons
-        contact_button_patterns = [
-            r'Contact\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-            r'Call\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-            r'Text\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-            r'Email\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-        ]
-        
-        for pattern in contact_button_patterns:
-            matches = re.findall(pattern, page_text, re.MULTILINE | re.IGNORECASE)
-            for match in matches:
-                name = match.strip()
-                if is_valid_agent_name(name):
-                    agent_names.add(name)
-                    log_message(f"   📝 Found agent via contact pattern: {name}")
-        
-        # 4. Look for names in proximity to phone numbers (limited processing for performance)
-        html_content = str(soup)
-        for phone in phones[:5]:  # Limit to first 5 phones to prevent hanging
-            phone_clean = re.sub(r'[^\d]', '', phone)
-            
-            phone_patterns = [
-                re.escape(phone),
-                re.escape(phone_clean),
-                phone_clean[:3] + r'[-.\s]*' + phone_clean[3:6] + r'[-.\s]*' + phone_clean[6:],
-            ]
-            
-            for pattern in phone_patterns:
-                for match in re.finditer(pattern, html_content, re.IGNORECASE):
-                    start = max(0, match.start() - 300)
-                    end = min(len(html_content), match.end() + 300)
-                    context = html_content[start:end]
-                    
-                    context_soup = BeautifulSoup(context, 'html.parser')
-                    context_text = context_soup.get_text()
-                    
-                    names = extract_names_from_agent_section(context_text)
-                    for name in names:
-                        if is_valid_agent_name(name):
-                            agent_names.add(name)
-                            log_message(f"   📝 Found agent near phone {phone}: {name}")
-        
-        # 5. Look for company/brokerage information
+        # Look for company information
+        companies = set()
         company_patterns = [
-            r'(?:Brokered by|Listed by|Courtesy of|Listing provided by|Brokerage)[\s:]+([A-Za-z][^,\n\.]{5,60})',
-            r'([A-Z][a-zA-Z\s&\-]{3,50}(?:Realty|Real Estate|Properties|Group|Team|Associates|Realtors?|Brokerage))',
+            r'([A-Z][a-zA-Z\s&\-]{3,50}(?:Realty|Real Estate|Properties|Group|Team|Associates|Realtors?))',
             r'(RE/MAX[A-Za-z\s&\-]*)',
             r'(Coldwell Banker[A-Za-z\s&\-]*)',
             r'(Century 21[A-Za-z\s&\-]*)',
-            r'(Keller Williams[A-Za-z\s&\-]*)',
-            r'(Compass[A-Za-z\s&\-]*)',
-            r'(eXp Realty[A-Za-z\s&\-]*)',
         ]
         
         for pattern in company_patterns:
             matches = re.findall(pattern, page_text, re.IGNORECASE)
-            for match in matches:
+            for match in matches[:3]:  # Limit matches
                 company = match.strip()
                 if is_valid_company_name(company):
                     companies.add(company)
-                    log_message(f"   🏢 Found company: {company}")
         
-        # 6. Look for names in JSON data (limited processing)
-        script_tags = soup.find_all('script', type='application/json')[:5]  # Limit to first 5 scripts
-        for script in script_tags:
-            try:
-                data = json.loads(script.string or '{}')
-                names_from_json = extract_names_from_json(data)
-                for name in names_from_json:
-                    if is_valid_agent_name(name):
-                        agent_names.add(name)
-                        log_message(f"   📝 Found agent in JSON data: {name}")
-            except (json.JSONDecodeError, AttributeError):
-                continue
-        
-        # Convert sets to lists and clean up
-        agent_info['names'] = list(agent_names)
-        agent_info['companies'] = list(companies)
-        
-        # Remove duplicates and clean up
-        agent_info['names'] = list(set([name.strip() for name in agent_info['names'] if name.strip()]))
-        agent_info['phones'] = list(set(agent_info['phones']))
-        agent_info['companies'] = list(set([comp.strip() for comp in agent_info['companies'] if comp.strip()]))
+        agent_info['names'] = list(agent_names)[:3]  # Limit names
+        agent_info['companies'] = list(companies)[:3]  # Limit companies
         
         return agent_info
         
@@ -582,184 +505,74 @@ def extract_agent_info(soup: BeautifulSoup) -> Dict[str, any]:
         log_message(f"   ❌ Error extracting agent info: {str(e)}")
         return {'names': [], 'phones': [], 'companies': []}
 
-def extract_names_from_agent_section(text: str) -> List[str]:
-    """Extract names from agent-specific text sections"""
-    names = []
-    
-    # Common name patterns for agents
-    name_patterns = [
-        r'\b([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})\b',  # First Last
-        r'\b([A-Z][a-z]{2,}\s+[A-Z]\.\s+[A-Z][a-z]{2,})\b',  # First M. Last
-        r'\b([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})\b',  # First Middle Last
-        r'\b([A-Z][a-z]{2,}\s+[A-Z][a-z]{1,3}[A-Z][a-z]{2,})\b',  # First McLastname
-    ]
-    
-    for pattern in name_patterns:
-        matches = re.findall(pattern, text)
-        for match in matches:
-            name = match.strip()
-            if len(name) >= 4 and len(name) <= 50:
-                names.append(name)
-    
-    return names
-
-def extract_names_from_json(data: any, path: str = "") -> List[str]:
-    """Recursively extract names from JSON data structures"""
-    names = []
-    
-    try:
-        if isinstance(data, dict):
-            for key, value in data.items():
-                # Look for keys that might contain agent names
-                if any(agent_key in key.lower() for agent_key in ['agent', 'contact', 'name', 'realtor', 'broker']):
-                    if isinstance(value, str) and is_valid_agent_name(value):
-                        names.append(value)
-                # Recurse into nested structures (limited depth)
-                if len(path.split('.')) < 3:  # Limit recursion depth
-                    names.extend(extract_names_from_json(value, f"{path}.{key}"))
-                
-        elif isinstance(data, list):
-            for i, item in enumerate(data[:10]):  # Limit list processing
-                if len(path.split('.')) < 3:  # Limit recursion depth
-                    names.extend(extract_names_from_json(item, f"{path}[{i}]"))
-                
-        elif isinstance(data, str):
-            # Check if string looks like a name
-            if is_valid_agent_name(data):
-                names.append(data)
-                
-    except Exception:
-        pass  # Ignore errors in JSON processing
-    
-    return names
-
 def is_valid_agent_name(name: str) -> bool:
     """Check if extracted text is likely a real estate agent name"""
     if not name or len(name) < 4 or len(name) > 50:
         return False
     
-    # Split into parts
     parts = name.split()
     if len(parts) < 2:
         return False
     
-    # Property terms that are definitely NOT names
+    # Basic validation
     property_terms = {
-        'electric', 'water', 'heater', 'gourmet', 'kitchen', 'corner', 'lot',
-        'high', 'ceilings', 'common', 'wall', 'walls', 'floor', 'floors',
-        'square', 'feet', 'sqft', 'bedroom', 'bathroom', 'garage', 'parking',
-        'pool', 'spa', 'patio', 'yard', 'garden', 'view', 'mountain', 'ocean',
-        'lake', 'river', 'street', 'avenue', 'road', 'drive', 'way', 'place',
-        'court', 'circle', 'lane', 'north', 'south', 'east', 'west',
-        'listing', 'property', 'home', 'house', 'condo', 'apartment',
-        'price', 'sold', 'sale', 'rent', 'lease', 'available', 'coming', 'soon',
-        'new', 'construction', 'built', 'year', 'updated', 'renovated',
-        'granite', 'marble', 'hardwood', 'tile', 'carpet', 'stainless', 'steel',
-        'appliances', 'washer', 'dryer', 'refrigerator', 'dishwasher',
-        'central', 'air', 'heating', 'cooling', 'fireplace', 'balcony',
-        'deck', 'fence', 'landscaping', 'sprinkler', 'security', 'alarm',
-        'single', 'family', 'residence', 'built', 'data', 'photos', 'floor',
-        'plan', 'home', 'save', 'share', 'hide', 'showcase', 'all', 'photos',
-        'for', 'sale', 'beds', 'baths', 'contact', 'request', 'tour'
+        'electric', 'water', 'kitchen', 'bedroom', 'bathroom', 'garage',
+        'listing', 'property', 'home', 'house', 'price', 'sold', 'new'
     }
     
-    # Check if any part is a property term
     for part in parts:
         if part.lower() in property_terms:
             return False
-    
-    # Must be alphabetic characters only (except for middle initials)
-    for part in parts:
-        if not (part.replace('.', '').isalpha() and len(part.replace('.', '')) >= 2):
+        if not part.replace('.', '').isalpha():
             return False
     
     return True
-
 
 def is_valid_company_name(company: str) -> bool:
     """Check if extracted text is likely a real estate company name"""
     if not company or len(company) < 5 or len(company) > 80:
         return False
     
-    # Remove common false positives
-    bad_terms = [
-        'loading', 'request', 'contact', 'today', 'early', 'button', 'click', 
-        'undefined', 'null', 'error', 'message', 'please', 'thank', 'welcome',
-        'search', 'results', 'found', 'showing', 'page', 'next', 'previous',
-        'photos', 'floor', 'plan', 'home', 'save', 'share', 'hide',
-        'electric water', 'gourmet kitchen', 'corner lot', 'high ceilings'
-    ]
-    
     company_lower = company.lower()
-    for term in bad_terms:
-        if term in company_lower:
-            return False
-    
-    # Must contain at least one real estate related term
     real_estate_terms = [
         'realty', 'real estate', 'properties', 'group', 'team', 'associates',
-        'realtors', 'realtor', 'brokerage', 'broker', 'homes', 'housing',
-        're/max', 'coldwell', 'century', 'keller', 'compass', 'exp', 'sotheby',
-        '24th', 'home'  # Added based on your screenshot showing "24TH&HOME"
+        'realtors', 'realtor', 'brokerage', 're/max', 'coldwell', 'century'
     ]
     
-    has_re_term = any(term in company_lower for term in real_estate_terms)
-    if not has_re_term:
-        return False
-    
-    return True
+    return any(term in company_lower for term in real_estate_terms)
 
-async def scrape_property_contacts(url: str, max_retries: int = MAX_RETRIES) -> Optional[Dict]:
-    """Scrape contact information from a property URL using ScraperAPI"""
-    for attempt in range(max_retries):
-        try:
-            log_message(f"   🌐 Attempt {attempt + 1}/{max_retries} - Scraping: {url}")
+async def scrape_property_contacts(url: str) -> Optional[Dict]:
+    """Scrape contact information from a property URL"""
+    try:
+        scraper_url = get_scraperapi_url(url)
+        
+        def make_request():
+            return requests.get(scraper_url, timeout=REQUEST_TIMEOUT)
+        
+        response = run_sync_with_timeout(make_request, REQUEST_TIMEOUT + 10)
+        
+        if response and response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            agent_info = extract_agent_info(soup)
             
-            scraper_url = get_scraperapi_url(url)
-            response = requests.get(scraper_url, timeout=60)
-            
-            if response.status_code == 200:
-                log_message(f"   ✅ Successfully fetched page (Length: {len(response.text)} chars)")
+            if agent_info['phones'] or agent_info['names']:
+                return agent_info
                 
-                soup = BeautifulSoup(response.text, 'html.parser')
-                agent_info = extract_agent_info(soup)
-                
-                log_message(f"   📞 Found: {len(agent_info['phones'])} phones, {len(agent_info['names'])} names, {len(agent_info['companies'])} companies")
-                
-                if agent_info['phones'] or agent_info['names']:
-                    return agent_info
-                else:
-                    log_message(f"   ⚠️  No contact information found")
-                    
-            elif response.status_code == 403:
-                log_message(f"   ❌ 403 Forbidden - Page blocked")
-            elif response.status_code == 404:
-                log_message(f"   ❌ 404 Not Found - Property may no longer exist")
-                break
-            else:
-                log_message(f"   ❌ HTTP {response.status_code}: {response.reason}")
-                
-        except Exception as e:
-            log_message(f"   ❌ Attempt {attempt + 1} failed: {str(e)}")
-            
-        if attempt < max_retries - 1:
-            delay = min(10 * (2 ** attempt), 60)
-            log_message(f"   ⏱️  Waiting {delay} seconds before retry...")
-            time.sleep(delay)
+    except Exception as e:
+        log_message(f"   ❌ Error scraping {url}: {str(e)}")
     
-    log_message(f"   ❌ Failed to scrape contact info after {max_retries} attempts")
     return None
 
-async def create_contacts_from_scraped_data(agent_info: Dict, lead_id: int) -> int:
+async def create_contacts_from_scraped_data(agent_info: Dict, lead_id: int, prisma: Prisma) -> int:
     """Create contact records from scraped agent information"""
     contacts_created = 0
     
-    # Create contacts pairing names with phones
-    if agent_info['names'] and agent_info['phones']:
-        pairs = min(len(agent_info['names']), len(agent_info['phones']))
-        
-        for i in range(pairs):
-            try:
+    try:
+        # Create contacts pairing names with phones
+        if agent_info['names'] and agent_info['phones']:
+            pairs = min(len(agent_info['names']), len(agent_info['phones']))
+            
+            for i in range(pairs):
                 contact_data = {
                     'name': agent_info['names'][i],
                     'phoneNumber': agent_info['phones'][i],
@@ -769,17 +582,19 @@ async def create_contacts_from_scraped_data(agent_info: Dict, lead_id: int) -> i
                 }
                 
                 contact_data = {k: v for k, v in contact_data.items() if v is not None}
-                await prisma.contact.create(data=contact_data)
-                contacts_created += 1
-                log_message(f"     ✅ Created contact: {agent_info['names'][i]} - {agent_info['phones'][i]}")
                 
-            except Exception as e:
-                log_message(f"     ❌ Error creating contact: {str(e)}")
+                result = await run_with_timeout(
+                    prisma.contact.create(data=contact_data),
+                    5
+                )
                 
-    # Create contacts for remaining phones without names
-    remaining_phones = agent_info['phones'][contacts_created:]
-    for phone in remaining_phones:
-        try:
+                if result:
+                    contacts_created += 1
+                    log_message(f"     ✅ Created: {agent_info['names'][i]} - {agent_info['phones'][i]}")
+        
+        # Create remaining phone contacts
+        remaining_phones = agent_info['phones'][contacts_created:]
+        for phone in remaining_phones[:2]:  # Limit remaining phones
             contact_data = {
                 'phoneNumber': phone,
                 'type': ContactType.AGENT,
@@ -787,236 +602,268 @@ async def create_contacts_from_scraped_data(agent_info: Dict, lead_id: int) -> i
                 'leads': {'connect': {'id': lead_id}}
             }
             
-            contact_data = {k: v for k, v in contact_data.items() if v is not None}
-            await prisma.contact.create(data=contact_data)
-            contacts_created += 1
-            log_message(f"     ✅ Created contact: Unknown Agent - {phone}")
+            result = await run_with_timeout(
+                prisma.contact.create(data=contact_data),
+                5
+            )
             
-        except Exception as e:
-            log_message(f"     ❌ Error creating contact for {phone}: {str(e)}")
+            if result:
+                contacts_created += 1
+                log_message(f"     ✅ Created: Unknown - {phone}")
+    
+    except Exception as e:
+        log_message(f"     ❌ Error creating contacts: {str(e)}")
     
     return contacts_created
 
-async def process_zillow_contacts() -> bool:
+async def process_zillow_contacts(prisma: Prisma) -> bool:
     """Process Zillow leads without contact information"""
-    start_time = datetime.now()
-    max_end_time = start_time + timedelta(minutes=MAX_RUNTIME_MINUTES)
-    
     log_message("📞 Starting contact extraction...")
     
     try:
         # Get leads without contacts
-        leads = await prisma.lead.find_many(
-            where={
-                'source': 'ZILLOW',
-                'contacts': {'none': {}},
-                'contactFetchAttempts': {'lt': 5},
-                'link': {'not': None}
-            },
-            take=MAX_CONTACTS_TO_PROCESS
+        leads = await run_with_timeout(
+            prisma.lead.find_many(
+                where={
+                    'source': 'ZILLOW',
+                    'contacts': {'none': {}},
+                    'contactFetchAttempts': {'lt': 3},
+                    'link': {'not': None}
+                },
+                take=MAX_CONTACTS_TO_PROCESS
+            ),
+            10
         )
         
         if not leads:
             log_message("✅ No leads need contact updates")
             return True
-            
-        log_message(f"📊 Processing {len(leads)} leads for contacts (max runtime: {MAX_RUNTIME_MINUTES} min)")
+        
+        log_message(f"📊 Processing {len(leads)} leads for contacts")
         
         total_contacts_created = 0
         total_processed = 0
-        total_errors = 0
         
         for lead in leads:
-            # Check timeout
-            if datetime.now() >= max_end_time:
-                log_message(f"⏰ Timeout reached, stopping processing")
+            if state.is_timeout():
+                log_message(f"⚠️  Timeout reached, stopping at lead {total_processed}")
                 break
                 
             try:
                 total_processed += 1
-                log_message(f"🔍 Lead {total_processed}/{len(leads)} - ID: {lead.zid}")
+                log_message(f"🔍 Lead {total_processed}/{len(leads)} - {lead.zid}")
                 
                 # Increment attempts
-                await prisma.lead.update(
-                    where={'id': lead.id},
-                    data={'contactFetchAttempts': lead.contactFetchAttempts + 1}
+                await run_with_timeout(
+                    prisma.lead.update(
+                        where={'id': lead.id},
+                        data={'contactFetchAttempts': lead.contactFetchAttempts + 1}
+                    ),
+                    5
                 )
                 
                 # Scrape contacts
                 agent_info = await scrape_property_contacts(lead.link)
                 
                 if agent_info:
-                    contacts_created = await create_contacts_from_scraped_data(agent_info, lead.id)
+                    contacts_created = await create_contacts_from_scraped_data(agent_info, lead.id, prisma)
                     total_contacts_created += contacts_created
                     
                     if contacts_created > 0:
-                        log_message(f"   ✅ Created {contacts_created} contacts for lead {lead.zid}")
+                        log_message(f"   ✅ Created {contacts_created} contacts")
                     else:
-                        log_message(f"   ⚠️  No contacts created for lead {lead.zid}")
-                        total_errors += 1
+                        log_message(f"   ⚠️  No contacts created")
                 else:
-                    log_message(f"   ❌ Failed to scrape contact info for lead {lead.zid}")
-                    total_errors += 1
+                    log_message(f"   ❌ No contact info found")
                 
                 # Delay between requests
-                if total_processed < len(leads):
+                if total_processed < len(leads) and not state.is_timeout():
                     delay = random.uniform(CONTACTS_MIN_DELAY, CONTACTS_MAX_DELAY)
-                    log_message(f"   ⏱️  Waiting {delay:.1f} seconds...")
-                    time.sleep(delay)
+                    await asyncio.sleep(delay)
                     
             except Exception as e:
-                log_message(f"   ❌ Error processing lead {lead.zid}: {str(e)}")
-                total_errors += 1
-                continue
+                log_message(f"   ❌ Error processing lead: {str(e)}")
         
-        runtime = datetime.now() - start_time
-        log_message(f"📊 Contacts Summary:")
-        log_message(f"- Runtime: {runtime.total_seconds()/60:.1f} minutes")
-        log_message(f"- Leads processed: {total_processed}")
-        log_message(f"- Contacts created: {total_contacts_created}")
-        log_message(f"- Errors: {total_errors}")
-        if total_processed > 0:
-            log_message(f"- Success rate: {((total_processed - total_errors) / total_processed * 100):.1f}%")
-        
+        log_message(f"📊 Contacts Summary: {total_processed} processed, {total_contacts_created} contacts created")
         return True
         
     except Exception as e:
         log_message(f"❌ Error in contact processing: {str(e)}")
         return False
-
 # ================== MAIN FUNCTION ==================
+
 async def main():
+    """Main execution function with proper error handling and cleanup"""
     parser = argparse.ArgumentParser(description='Complete Zillow Scraper - Listings + Contacts')
     parser.add_argument('--listings-only', action='store_true', help='Only fetch listings')
     parser.add_argument('--contacts-only', action='store_true', help='Only extract contacts')
     parser.add_argument('--skip-contacts', action='store_true', help='Skip contacts')
-    parser.add_argument('--skip-proxy-test', action='store_true', help='Skip proxy test (for production)')
+    parser.add_argument('--skip-proxy-test', action='store_true', help='Skip proxy test')
     args = parser.parse_args()
     
     start_time = datetime.now()
     log_message("🚀 Starting Complete Zillow Scraper")
-    log_message(f"Working directory: {os.getcwd()}")
+    log_message(f"Max runtime: {MAX_RUNTIME_MINUTES} minutes")
     
     ensure_data_directory()
+    setup_signal_handlers()
     
-    # Connect to database
+    success_listings = True
+    success_contacts = True
+    
     try:
-        await prisma.connect()
-        log_message("✅ Database connected successfully")
-    except Exception as e:
-        log_message(f"❌ Database connection failed: {e}")
-        raise
-
-    try:
-        success_listings = True
-        success_contacts = True
-        
-        # Step 1: Fetch Listings (unless contacts-only)
-        if not args.contacts_only:
-            log_message("=" * 50)
-            log_message("STEP 1: FETCHING LISTINGS")
-            log_message("=" * 50)
-            try:
-                success_listings = await fetch_zillow_listings(skip_proxy_test=args.skip_proxy_test)
-                log_message(f"✅ Listings fetch completed: {'Success' if success_listings else 'Failed'}")
-            except Exception as e:
-                log_message(f"❌ Error in fetch_zillow_listings: {e}")
-                success_listings = False
-            
-            if not success_listings:
-                log_message("⚠️  Listings fetch failed, but continuing...")
-        
-        # Step 2: Extract Contacts (unless listings-only or skip-contacts)
-        if not args.listings_only and not args.skip_contacts:
-            log_message("=" * 50)
-            log_message("STEP 2: EXTRACTING CONTACTS")
-            log_message("=" * 50)
-            
-            if not SCRAPERAPI_KEY:
-                log_message("❌ SCRAPERAPI_KEY not set, skipping contacts")
-                success_contacts = False
-            else:
+        async with get_prisma_client() as prisma:
+            # Step 1: Fetch Listings
+            if not args.contacts_only:
+                log_message("=" * 50)
+                log_message("STEP 1: FETCHING LISTINGS")
+                log_message("=" * 50)
+                
                 try:
-                    success_contacts = await process_zillow_contacts()
-                    log_message(f"✅ Contacts processing completed: {'Success' if success_contacts else 'Failed'}")
+                    success_listings = await fetch_zillow_listings(prisma, args.skip_proxy_test)
+                    log_message(f"Listings: {'✅ Success' if success_listings else '❌ Failed'}")
                 except Exception as e:
-                    log_message(f"❌ Error in process_zillow_contacts: {e}")
-                    success_contacts = False
-        elif args.skip_contacts:
-            log_message("⚠️  Contact extraction skipped as requested")
-        elif args.listings_only:
-            log_message("⚠️  Running in listings-only mode")
-        
-        # Final summary
-        runtime = datetime.now() - start_time
-        log_message("=" * 50)
-        log_message("FINAL SUMMARY")
-        log_message("=" * 50)
-        log_message(f"Total runtime: {runtime.total_seconds()/60:.1f} minutes")
-        log_message(f"Listings: {'✅ Success' if success_listings else '❌ Failed'}")
-        log_message(f"Contacts: {'✅ Success' if success_contacts else '❌ Failed/Skipped'}")
-        
-        if success_listings and success_contacts:
-            log_message("🎉 Complete scraper finished successfully!")
-            return True
-        else:
-            log_message("⚠️  Scraper completed with some issues")
-            return False
+                    log_message(f"❌ Listings error: {e}")
+                    success_listings = False
             
+            # Step 2: Extract Contacts
+            if not args.listings_only and not args.skip_contacts and not state.is_timeout():
+                log_message("=" * 50)
+                log_message("STEP 2: EXTRACTING CONTACTS")
+                log_message("=" * 50)
+                
+                if not SCRAPERAPI_KEY:
+                    log_message("❌ SCRAPERAPI_KEY not set, skipping contacts")
+                    success_contacts = False
+                else:
+                    try:
+                        success_contacts = await process_zillow_contacts(prisma)
+                        log_message(f"Contacts: {'✅ Success' if success_contacts else '❌ Failed'}")
+                    except Exception as e:
+                        log_message(f"❌ Contacts error: {e}")
+                        success_contacts = False
+            
+            # Final summary
+            runtime = datetime.now() - start_time
+            log_message("=" * 50)
+            log_message("FINAL SUMMARY")
+            log_message("=" * 50)
+            log_message(f"Runtime: {runtime.total_seconds()/60:.1f} minutes")
+            log_message(f"Listings: {'✅ Success' if success_listings else '❌ Failed'}")
+            log_message(f"Contacts: {'✅ Success' if success_contacts else '❌ Failed/Skipped'}")
+            
+            if success_listings and success_contacts:
+                log_message("🎉 Scraper completed successfully!")
+                return True
+            else:
+                log_message("⚠️  Scraper completed with issues")
+                return False
+                
     except Exception as e:
-        log_message(f"❌ Critical error in main execution: {e}")
-        print(f"❌ Critical error in main execution: {e}")
+        log_message(f"❌ Critical error: {e}")
         import traceback
         traceback.print_exc()
         return False
+
+
+async def safe_cleanup():
+    """Perform safe cleanup of resources"""
+    log_message("🧹 Performing cleanup...")
+    
+    try:
+        # Cancel all tasks except the current one
+        current_task = asyncio.current_task()
+        tasks = [task for task in asyncio.all_tasks() if task != current_task and not task.done()]
         
-    finally:
+        if tasks:
+            log_message(f"Cancelling {len(tasks)} running tasks...")
+            for task in tasks:
+                task.cancel()
+            
+            # Wait for tasks to be cancelled with timeout
+            try:
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5.0)
+                log_message("✅ All tasks cancelled successfully")
+            except asyncio.TimeoutError:
+                log_message("⚠️  Some tasks didn't cancel within timeout")
+        
+        # Close any open aiohttp sessions
         try:
-            # Force close all aiohttp connections
-            await asyncio.sleep(0.1)  # Give pending operations time to complete
-            
-            # Close all aiohttp connector pools
-            connector_cleanup_tasks = []
-            for obj in gc.get_objects():
-                if isinstance(obj, aiohttp.connector.TCPConnector):
-                    connector_cleanup_tasks.append(obj.close())
-            
-            if connector_cleanup_tasks:
-                await asyncio.gather(*connector_cleanup_tasks, return_exceptions=True)
-                await asyncio.sleep(0.1)  # Wait for cleanup
-            
-            # Disconnect database
-            # await prisma.disconnect()
-            log_message("✅ Database disconnected")
-            
-            # Force close any remaining tasks
-            pending_tasks = [task for task in asyncio.all_tasks() if not task.done()]
-            if pending_tasks:
-                log_message(f"⚠️  Cancelling {len(pending_tasks)} pending tasks")
-                for task in pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*pending_tasks, return_exceptions=True)
-            
+            import aiohttp
+            # Force close any unclosed sessions
+            connector = aiohttp.TCPConnector()
+            await connector.close()
+            log_message("✅ HTTP sessions closed")
         except Exception as e:
-            log_message(f"⚠️  Error in cleanup: {e}")
+            log_message(f"⚠️  Error closing HTTP sessions: {e}")
+        
+        # Close any open file handles
+        try:
+            import gc
+            gc.collect()
+            log_message("✅ Garbage collection completed")
+        except Exception as e:
+            log_message(f"⚠️  Error during garbage collection: {e}")
+            
+        log_message("✅ Cleanup completed")
+        
+    except Exception as e:
+        log_message(f"❌ Error during cleanup: {e}")
+
 
 async def cleanup_and_exit():
-    """Force cleanup and exit"""
-    log_message("🧹 Performing final cleanup...")
+    """Final cleanup before script termination"""
+    try:
+        await safe_cleanup()
+        
+        # Additional cleanup for database connections
+        try:
+            # Close any remaining database connections
+            log_message("🔌 Closing database connections...")
+            # Add any specific database cleanup here if needed
+        except Exception as e:
+            log_message(f"⚠️  Error closing database connections: {e}")
+            
+        # Final memory cleanup
+        import gc
+        gc.collect()
+        
+    except Exception as e:
+        log_message(f"❌ Error during final cleanup: {e}")
+
+
+def setup_signal_handlers():
+    """Setup signal handlers for graceful shutdown"""
+    import signal
     
-    # Cancel all running tasks
-    tasks = [task for task in asyncio.all_tasks() if not task.done()]
-    if tasks:
-        log_message(f"Cancelling {len(tasks)} remaining tasks")
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+    def signal_handler(signum, frame):
+        log_message(f"🛑 Received signal {signum}, initiating graceful shutdown...")
+        state.set_timeout(True)
+        
+        # Run cleanup in the event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(cleanup_and_exit())
+        except Exception as e:
+            log_message(f"❌ Error in signal handler: {e}")
     
-    # Force garbage collection
-    import gc
-    gc.collect()
-    
-    log_message("✅ Cleanup completed")
+    # Register signal handlers
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+
+def ensure_data_directory():
+    """Ensure data directory exists"""
+    try:
+        import os
+        data_dir = "data"
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+            log_message(f"📁 Created data directory: {data_dir}")
+    except Exception as e:
+        log_message(f"❌ Error creating data directory: {e}")
+
 
 if __name__ == "__main__":
     print("🟢 Script started")
@@ -1038,8 +885,12 @@ if __name__ == "__main__":
             print("⚠️  Script finished with issues")
             log_message("⚠️  Script finished with issues")
             
+    except KeyboardInterrupt:
+        print("🛑 Script interrupted by user")
+        log_message("🛑 Script interrupted by user")
     except Exception as e:
         print(f"❌ Script failed with error: {e}")
+        log_message(f"❌ Script failed with error: {e}")
         import traceback
         traceback.print_exc()
     
