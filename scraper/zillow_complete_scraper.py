@@ -986,7 +986,7 @@ async def main():
                 await asyncio.sleep(0.1)  # Wait for cleanup
             
             # Disconnect database
-            await prisma.disconnect()
+            # await prisma.disconnect()
             log_message("✅ Database disconnected")
             
             # Force close any remaining tasks
