@@ -1,21 +1,21 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-import axios from 'axios';
-import toast from 'react-hot-toast';
-import { useAuth } from '@/contexts/AuthContext';
-import Input from '@/components/Input';
-import Button from '@/components/Button';
-import { API_URL } from '@/utils/api';
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import axios from "axios";
+import toast from "react-hot-toast";
+import { useAuth } from "@/contexts/AuthContext";
+import Input from "@/components/Input";
+import Button from "@/components/Button";
+import { API_URL } from "@/utils/api";
 
 export default function SignIn() {
   const router = useRouter();
   const { login } = useAuth();
   const [formData, setFormData] = useState({
-    email: '',
-    password: '',
+    email: "",
+    password: "",
   });
   const [loading, setLoading] = useState(false);
 
@@ -25,13 +25,13 @@ export default function SignIn() {
 
     try {
       const response = await axios.post(`${API_URL}/api/auth/login`, formData);
-      toast.success('Successfully signed in!');
-      
+      toast.success("Successfully signed in!");
+
       // Use AuthContext login method
       login(response.data.token, response.data.user);
-      router.push('/dashboard');
+      router.push("/dashboard");
     } catch (error) {
-      toast.error(error.response?.data?.message || 'Failed to sign in');
+      toast.error(error.response?.data?.message || "Failed to sign in");
     } finally {
       setLoading(false);
     }
@@ -52,37 +52,37 @@ export default function SignIn() {
               type="email"
               required
               value={formData.email}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+              onChange={(e) =>
+                setFormData({ ...formData, email: e.target.value })
+              }
             />
             <Input
               label="Password"
               type="password"
               required
               value={formData.password}
-              onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+              onChange={(e) =>
+                setFormData({ ...formData, password: e.target.value })
+              }
             />
           </div>
 
           <div>
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={loading}
-            >
-              {loading ? 'Signing in...' : 'Sign in'}
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? "Signing in..." : "Sign in"}
             </Button>
           </div>
 
-          <div className="text-center">
+          {/* <div className="text-center">
             <p className="text-sm text-gray-600">
               Don't have an account?{' '}
               <Link href="/signup" className="font-medium text-blue-600 hover:text-blue-500">
                 Sign up
               </Link>
             </p>
-          </div>
+          </div> */}
         </form>
       </div>
     </div>
   );
-} 
+}

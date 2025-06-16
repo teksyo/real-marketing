@@ -1,30 +1,30 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-import axios from 'axios';
-import toast from 'react-hot-toast';
-import Input from '@/components/Input';
-import Button from '@/components/Button';
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import axios from "axios";
+import toast from "react-hot-toast";
+import Input from "@/components/Input";
+import Button from "@/components/Button";
 
-import { API_URL } from '@/utils/api';
+import { API_URL } from "@/utils/api";
 
 export default function SignUp() {
   const router = useRouter();
   const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    password: '',
-    confirmPassword: '',
-    region: 'US', // Default region
+    name: "",
+    email: "",
+    password: "",
+    confirmPassword: "",
+    region: "NO", // Default region
   });
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (formData.password !== formData.confirmPassword) {
-      toast.error('Passwords do not match');
+      toast.error("Passwords do not match");
       return;
     }
 
@@ -37,10 +37,10 @@ export default function SignUp() {
         password: formData.password,
         region: formData.region,
       });
-      toast.success('Account created successfully!');
-      router.push('/signin');
+      toast.success("Account created successfully!");
+      router.push("/signin");
     } catch (error) {
-      toast.error(error.response?.data?.message || 'Failed to create account');
+      toast.error(error.response?.data?.message || "Failed to create account");
     } finally {
       setLoading(false);
     }
@@ -48,7 +48,7 @@ export default function SignUp() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-md w-full space-y-8">
+      {/* <div className="max-w-md w-full space-y-8">
         <div>
           <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
             Create your account
@@ -61,36 +61,50 @@ export default function SignUp() {
               type="text"
               required
               value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              onChange={(e) =>
+                setFormData({ ...formData, name: e.target.value })
+              }
             />
             <Input
               label="Email address"
               type="email"
               required
               value={formData.email}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+              onChange={(e) =>
+                setFormData({ ...formData, email: e.target.value })
+              }
             />
             <Input
               label="Password"
               type="password"
               required
               value={formData.password}
-              onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+              onChange={(e) =>
+                setFormData({ ...formData, password: e.target.value })
+              }
             />
             <Input
               label="Confirm Password"
               type="password"
               required
               value={formData.confirmPassword}
-              onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
+              onChange={(e) =>
+                setFormData({ ...formData, confirmPassword: e.target.value })
+              }
             />
             <div>
-              <label className="block text-sm font-medium text-gray-700">Region</label>
+              <label className="block text-sm font-medium text-gray-700">
+                Region
+              </label>
               <select
-                className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
+                className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-1 border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
                 value={formData.region}
-                onChange={(e) => setFormData({ ...formData, region: e.target.value })}
+                onChange={(e) =>
+                  setFormData({ ...formData, region: e.target.value })
+                }
+                style={{ border: "1px solid", borderColor: "rgb(209 213 219)" }}
               >
+                <option value="NO">-- Not Assigned --</option>
                 <option value="US">United States</option>
                 <option value="CA">Canada</option>
                 <option value="UK">United Kingdom</option>
@@ -99,25 +113,24 @@ export default function SignUp() {
           </div>
 
           <div>
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={loading}
-            >
-              {loading ? 'Creating account...' : 'Sign up'}
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? "Creating account..." : "Sign up"}
             </Button>
           </div>
 
           <div className="text-center">
             <p className="text-sm text-gray-600">
-              Already have an account?{' '}
-              <Link href="/signin" className="font-medium text-blue-600 hover:text-blue-500">
+              Already have an account?{" "}
+              <Link
+                href="/signin"
+                className="font-medium text-blue-600 hover:text-blue-500"
+              >
                 Sign in
               </Link>
             </p>
           </div>
         </form>
-      </div>
+      </div> */}
     </div>
   );
-} 
+}
