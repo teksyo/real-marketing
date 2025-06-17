@@ -1,44 +1,98 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import DashboardLayout from '@/components/DashboardLayout';
-import AuthGuard from '@/components/AuthGuard';
-import { leadService, LEAD_PRIORITIES, LEAD_SOURCES } from '@/services/leads';
-import { ArrowLeftIcon } from '@heroicons/react/24/outline';
-import Link from 'next/link';
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import DashboardLayout from "@/components/DashboardLayout";
+import AuthGuard from "@/components/AuthGuard";
+import { leadService, LEAD_PRIORITIES, LEAD_SOURCES } from "@/services/leads";
+import { ArrowLeftIcon } from "@heroicons/react/24/outline";
+import Link from "next/link";
 
 export default function NewLeadPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  
+  const [error, setError] = useState("");
+  const stateAbbreviations = {
+    Alabama: "AL",
+    Alaska: "AK",
+    Arizona: "AZ",
+    Arkansas: "AR",
+    California: "CA",
+    Colorado: "CO",
+    Connecticut: "CT",
+    Delaware: "DE",
+    Florida: "FL",
+    Georgia: "GA",
+    Hawaii: "HI",
+    Idaho: "ID",
+    Illinois: "IL",
+    Indiana: "IN",
+    Iowa: "IA",
+    Kansas: "KS",
+    Kentucky: "KY",
+    Louisiana: "LA",
+    Maine: "ME",
+    Maryland: "MD",
+    Massachusetts: "MA",
+    Michigan: "MI",
+    Minnesota: "MN",
+    Mississippi: "MS",
+    Missouri: "MO",
+    Montana: "MT",
+    Nebraska: "NE",
+    Nevada: "NV",
+    "New Hampshire": "NH",
+    "New Jersey": "NJ",
+    "New Mexico": "NM",
+    "New York": "NY",
+    "North Carolina": "NC",
+    "North Dakota": "ND",
+    Ohio: "OH",
+    Oklahoma: "OK",
+    Oregon: "OR",
+    Pennsylvania: "PA",
+    "Rhode Island": "RI",
+    "South Carolina": "SC",
+    "South Dakota": "SD",
+    Tennessee: "TN",
+    Texas: "TX",
+    Utah: "UT",
+    Vermont: "VT",
+    Virginia: "VA",
+    Washington: "WA",
+    "West Virginia": "WV",
+    Wisconsin: "WI",
+    Wyoming: "WY",
+  };
+
   const [formData, setFormData] = useState({
-    address: '',
-    price: '',
-    beds: '',
-    zipCode: '',
-    phoneNumber: '',
-    priority: 'MEDIUM',
-    source: 'MANUAL',
-    notes: '',
-    nextFollowUpDate: '',
+    address: "",
+    price: "",
+    beds: "",
+    zipCode: "",
+    phoneNumber: "",
+    priority: "MEDIUM",
+    source: "MANUAL",
+    notes: "",
+    nextFollowUpDate: "",
+    region: "",
   });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     if (!formData.zipCode.trim()) {
-      setError('ZIP code is required');
+      setError("ZIP code is required");
       return;
     }
 
     try {
       setLoading(true);
-      setError('');
-      
+      setError("");
+
       const leadData = {
         ...formData,
+        region: formData.region || null,
         price: formData.price || null,
         beds: formData.beds || null,
         notes: formData.notes || null,
@@ -46,9 +100,9 @@ export default function NewLeadPage() {
       };
 
       await leadService.createLead(leadData);
-      router.push('/leads');
+      router.push("/leads");
     } catch (err) {
-      setError(err.message || 'Failed to create lead');
+      setError(err.message || "Failed to create lead");
     } finally {
       setLoading(false);
     }
@@ -56,15 +110,15 @@ export default function NewLeadPage() {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
-    
+    setFormData((prev) => ({ ...prev, [name]: value }));
+
     // Clear error when user starts typing
-    if (error) setError('');
+    if (error) setError("");
   };
 
   const formatDateForInput = (date) => {
-    if (!date) return '';
-    return new Date(date).toISOString().split('T')[0];
+    if (!date) return "";
+    return new Date(date).toISOString().split("T")[0];
   };
 
   return (
@@ -98,11 +152,16 @@ export default function NewLeadPage() {
 
               {/* Property Information */}
               <div>
-                <h3 className="text-lg font-medium text-gray-900 mb-4">Property Information</h3>
+                <h3 className="text-lg font-medium text-gray-900 mb-4">
+                  Property Information
+                </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {/* Address */}
                   <div className="md:col-span-2">
-                    <label htmlFor="address" className="block text-sm font-medium text-gray-700 mb-1">
+                    <label
+                      htmlFor="address"
+                      className="block text-sm font-medium text-gray-700 mb-1"
+                    >
                       Property Address
                     </label>
                     <input
@@ -118,7 +177,10 @@ export default function NewLeadPage() {
 
                   {/* ZIP Code */}
                   <div>
-                    <label htmlFor="zipCode" className="block text-sm font-medium text-gray-700 mb-1">
+                    <label
+                      htmlFor="zipCode"
+                      className="block text-sm font-medium text-gray-700 mb-1"
+                    >
                       ZIP Code <span className="text-red-500">*</span>
                     </label>
                     <input
@@ -135,7 +197,10 @@ export default function NewLeadPage() {
 
                   {/* Price */}
                   <div>
-                    <label htmlFor="price" className="block text-sm font-medium text-gray-700 mb-1">
+                    <label
+                      htmlFor="price"
+                      className="block text-sm font-medium text-gray-700 mb-1"
+                    >
                       Price
                     </label>
                     <input
@@ -151,7 +216,10 @@ export default function NewLeadPage() {
 
                   {/* Beds */}
                   <div>
-                    <label htmlFor="beds" className="block text-sm font-medium text-gray-700 mb-1">
+                    <label
+                      htmlFor="beds"
+                      className="block text-sm font-medium text-gray-700 mb-1"
+                    >
                       Bedrooms
                     </label>
                     <input
@@ -167,7 +235,10 @@ export default function NewLeadPage() {
 
                   {/* Phone Number */}
                   <div>
-                    <label htmlFor="phoneNumber" className="block text-sm font-medium text-gray-700 mb-1">
+                    <label
+                      htmlFor="phoneNumber"
+                      className="block text-sm font-medium text-gray-700 mb-1"
+                    >
                       Phone Number
                     </label>
                     <input
@@ -184,12 +255,18 @@ export default function NewLeadPage() {
               </div>
 
               {/* Lead Classification */}
+
               <div>
-                <h3 className="text-lg font-medium text-gray-900 mb-4">Lead Classification</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <h3 className="text-lg font-medium text-gray-900 mb-4">
+                  Lead Classification
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   {/* Priority */}
                   <div>
-                    <label htmlFor="priority" className="block text-sm font-medium text-gray-700 mb-1">
+                    <label
+                      htmlFor="priority"
+                      className="block text-sm font-medium text-gray-700 mb-1"
+                    >
                       Priority
                     </label>
                     <select
@@ -199,7 +276,7 @@ export default function NewLeadPage() {
                       onChange={handleChange}
                       className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     >
-                      {LEAD_PRIORITIES.map(priority => (
+                      {LEAD_PRIORITIES.map((priority) => (
                         <option key={priority.value} value={priority.value}>
                           {priority.label}
                         </option>
@@ -209,7 +286,10 @@ export default function NewLeadPage() {
 
                   {/* Source */}
                   <div>
-                    <label htmlFor="source" className="block text-sm font-medium text-gray-700 mb-1">
+                    <label
+                      htmlFor="source"
+                      className="block text-sm font-medium text-gray-700 mb-1"
+                    >
                       Lead Source
                     </label>
                     <select
@@ -219,11 +299,41 @@ export default function NewLeadPage() {
                       onChange={handleChange}
                       className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     >
-                      {LEAD_SOURCES.map(source => (
+                      {LEAD_SOURCES.map((source) => (
                         <option key={source.value} value={source.value}>
                           {source.label}
                         </option>
                       ))}
+                    </select>
+                  </div>
+
+                  {/* Region */}
+                  <div>
+                    <label
+                      htmlFor="region"
+                      className="block text-sm font-medium text-gray-700 mb-1"
+                    >
+                      Region
+                    </label>
+                    <select
+                      id="region"
+                      name="region"
+                      required
+                      value={formData.region}
+                      onChange={handleChange}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                      <option value="">Select a state...</option>
+                      {Object.entries(stateAbbreviations).map(
+                        ([stateName, abbreviation]) => (
+                          <option
+                            key={stateName}
+                            value={`${stateName}, ${abbreviation}`}
+                          >
+                            {stateName}, {abbreviation}
+                          </option>
+                        )
+                      )}
                     </select>
                   </div>
                 </div>
@@ -231,11 +341,16 @@ export default function NewLeadPage() {
 
               {/* Follow-up and Notes */}
               <div>
-                <h3 className="text-lg font-medium text-gray-900 mb-4">Additional Information</h3>
+                <h3 className="text-lg font-medium text-gray-900 mb-4">
+                  Additional Information
+                </h3>
                 <div className="space-y-4">
                   {/* Next Follow-up Date */}
                   <div>
-                    <label htmlFor="nextFollowUpDate" className="block text-sm font-medium text-gray-700 mb-1">
+                    <label
+                      htmlFor="nextFollowUpDate"
+                      className="block text-sm font-medium text-gray-700 mb-1"
+                    >
                       Next Follow-up Date
                     </label>
                     <input
@@ -244,14 +359,17 @@ export default function NewLeadPage() {
                       name="nextFollowUpDate"
                       value={formData.nextFollowUpDate}
                       onChange={handleChange}
-                      min={new Date().toISOString().split('T')[0]}
+                      min={new Date().toISOString().split("T")[0]}
                       className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     />
                   </div>
 
                   {/* Notes */}
                   <div>
-                    <label htmlFor="notes" className="block text-sm font-medium text-gray-700 mb-1">
+                    <label
+                      htmlFor="notes"
+                      className="block text-sm font-medium text-gray-700 mb-1"
+                    >
                       Notes
                     </label>
                     <textarea
@@ -286,7 +404,7 @@ export default function NewLeadPage() {
                       Creating...
                     </>
                   ) : (
-                    'Create Lead'
+                    "Create Lead"
                   )}
                 </button>
               </div>
@@ -307,4 +425,4 @@ export default function NewLeadPage() {
       </DashboardLayout>
     </AuthGuard>
   );
-} 
+}

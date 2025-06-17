@@ -34,6 +34,7 @@ const navigation = [
 export default function DashboardLayout({ children }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [userData, setUser] = useState(null);
   const { user, logout } = useAuth();
 
   const handleLogout = () => {
@@ -47,6 +48,7 @@ export default function DashboardLayout({ children }) {
       });
       const data = await res.json();
       setRole(data.user.role);
+      setUser(data.user);
     };
     fetchUser();
   }, []);
@@ -105,13 +107,13 @@ export default function DashboardLayout({ children }) {
               <div className="flex-shrink-0">
                 <div className="h-8 w-8 rounded-full bg-blue-600 flex items-center justify-center">
                   <span className="text-sm font-medium text-white">
-                    {user?.email?.charAt(0).toUpperCase()}
+                    {userData?.email?.charAt(0).toUpperCase()}
                   </span>
                 </div>
               </div>
               <div className="ml-3 flex-1">
                 <p className="text-sm font-medium text-gray-900 truncate">
-                  {user?.email}
+                  {userData?.email}
                 </p>
               </div>
             </div>
@@ -166,13 +168,13 @@ export default function DashboardLayout({ children }) {
               <div className="flex-shrink-0">
                 <div className="h-8 w-8 rounded-full bg-blue-600 flex items-center justify-center">
                   <span className="text-sm font-medium text-white">
-                    {user?.email?.charAt(0).toUpperCase()}
+                    {userData?.email?.charAt(0).toUpperCase()}
                   </span>
                 </div>
               </div>
-              <div className="ml-3 flex-1">
-                <p className="text-sm font-medium text-gray-900 truncate">
-                  {user?.email}
+              <div className="ml-3">
+                <p className="text-[12px] font-medium text-gray-900 truncate">
+                  {userData?.email}
                 </p>
               </div>
             </div>
