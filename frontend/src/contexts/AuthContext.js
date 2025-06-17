@@ -1,15 +1,15 @@
-'use client';
+"use client";
 
-import { createContext, useContext, useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { setAuthErrorHandler } from '@/utils/api';
+import { createContext, useContext, useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { apiFetch, setAuthErrorHandler, API_URL } from "@/utils/api";
 
 const AuthContext = createContext();
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
+    throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
 };
@@ -29,55 +29,53 @@ export const AuthProvider = ({ children }) => {
     setAuthErrorHandler(handleAuthError);
   }, []);
 
-  const checkAuth = () => {
-    console.log('AuthContext: checkAuth called');
+  const checkAuth = async () => {
+    console.log("AuthContext: checkAuth called");
     try {
-      const token = localStorage.getItem('token');
-      const userData = localStorage.getItem('user');
-      
-      console.log('AuthContext: token=', !!token, 'userData=', !!userData);
-      
-      if (token && userData) {
-        const parsedUser = JSON.parse(userData);
-        console.log('AuthContext: Setting user=', parsedUser);
-        setUser(parsedUser);
+      const token = localStorage.getItem("token");
+      const res = await apiFetch(`${API_URL}/api/auth/users/me`, {
+        method: "GET",
+      });
+      const userData = await res.json();
+      if (token && userData.user) {
+        setUser(userData.user);
       } else {
-        console.log('AuthContext: No token or userData, setting user to null');
+        console.log("AuthContext: No token or userData, setting user to null");
         setUser(null);
       }
     } catch (error) {
-      console.error('AuthContext: Error checking auth:', error);
+      console.error("AuthContext: Error checking auth:", error);
       setUser(null);
     } finally {
-      console.log('AuthContext: Setting loading to false');
+      console.log("AuthContext: Setting loading to false");
       setLoading(false);
     }
   };
 
   const login = (token, userData) => {
-    localStorage.setItem('token', token);
-    localStorage.setItem('user', JSON.stringify(userData));
+    localStorage.setItem("token", token);
+    localStorage.setItem("user", JSON.stringify(userData));
     setUser(userData);
   };
 
   const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
     setUser(null);
-    router.push('/signin');
+    router.push("/signin");
   };
 
   const handleAuthError = () => {
     // Clear auth data and redirect to signin
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
     setUser(null);
-    router.push('/signin');
+    router.push("/signin");
   };
 
   const isAuthenticated = () => {
-    const token = !!localStorage.getItem('token');
-    console.log('AuthContext: isAuthenticated called, returning=', token);
+    const token = !!localStorage.getItem("token");
+    console.log("AuthContext: isAuthenticated called, returning=", token);
     return token;
   };
 
@@ -88,12 +86,8 @@ export const AuthProvider = ({ children }) => {
     logout,
     handleAuthError,
     isAuthenticated,
-    checkAuth
+    checkAuth,
   };
 
-  return (
-    <AuthContext.Provider value={value}>
-      {children}
-    </AuthContext.Provider>
-  );
-}; 
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};

@@ -34,6 +34,7 @@ router.get(
   authMiddleware,
   async (req: Request, res: Response): Promise<void> => {
     const user = (req as any).user;
+    console.log(user.region, "user");
 
     try {
       const {
@@ -50,51 +51,85 @@ router.get(
 
       const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
 
-      // Base filter: show scraped leads to all users, manual leads only to creators
+      // Parse user's allowed regions
+      const allowedRegions = (user.region || "")
+        .split(",")
+        .map((r: string) => r.trim().toUpperCase()) // ensure consistent casing
+        .filter(Boolean); // remove empty strings
+
+      // Utility: create filter to match allowed region suffix
+      const regionFilter = {
+        OR: allowedRegions.map((r: string) => ({
+          region: {
+            endsWith: `, ${r}`, // match "Greenwood, IN" for "IN"
+            mode: "insensitive",
+          },
+        })),
+      };
+
+      // Base visibility: public scraped + user's manual leads
       let where: any = {
-        OR: [
-          { source: "ZILLOW" }, // Show all Zillow scraped leads to everyone
-          { createdById: user.id }, // Show user's own manually created leads
+        AND: [
+          {
+            OR: [{ source: "ZILLOW" }, { createdById: user.id }],
+          },
+          regionFilter, // enforce region restriction at base level
         ],
       };
 
-      // If filtering by specific source, adjust the logic
+      // If filtering by specific source
       if (source) {
         if (source === "ZILLOW") {
-          where = { source: "ZILLOW" };
+          where.AND[0] = { source: "ZILLOW" };
         } else {
-          where = {
+          where.AND[0] = {
             source: source,
             createdById: user.id,
           };
         }
       }
 
-      // Apply other filters
-      if (status) where.status = status;
-      if (priority) where.priority = priority;
-      if (region) where.region = region;
+      // Status, priority
+      if (status) where.AND.push({ status });
+      if (priority) where.AND.push({ priority });
 
-      // Add search functionality
+      // If region is explicitly queried, ensure it's also inside allowed regions
+      if (region) {
+        const regionParam = (region as string).toUpperCase();
+        const matchedRegions = allowedRegions.filter(
+          (r: string) => r === regionParam
+        );
+
+        if (matchedRegions.length === 0) {
+          // If user requested a region not allowed for them, return empty
+          res.json({
+            leads: [],
+            pagination: {
+              total: 0,
+              page: parseInt(page as string),
+              limit: parseInt(limit as string),
+              totalPages: 0,
+            },
+          });
+        }
+
+        // Only filter within the allowed region
+        where.AND.push({
+          region: {
+            endsWith: `, ${regionParam}`,
+            mode: "insensitive",
+          },
+        });
+      }
+
+      // Search logic
       if (search) {
         const searchConditions = [
           { address: { contains: search, mode: "insensitive" } },
           { zipCode: { contains: search } },
           { notes: { contains: search, mode: "insensitive" } },
         ];
-
-        if (where.OR) {
-          // If we have OR conditions (base case), combine with search
-          where = {
-            AND: [{ OR: where.OR }, { OR: searchConditions }],
-          };
-        } else {
-          // If we have specific filters, just add search
-          const existingConditions = { ...where };
-          where = {
-            AND: [existingConditions, { OR: searchConditions }],
-          };
-        }
+        where.AND.push({ OR: searchConditions });
       }
 
       const [leads, total] = await Promise.all([
@@ -112,14 +147,12 @@ router.get(
             lastContactDate: true,
             createdAt: true,
             region: true,
-            // Only get the first contact's phone number
             contacts: {
               select: {
                 phoneNumber: true,
               },
               take: 1,
             },
-            // Only get counts for action indicators
             _count: {
               select: {
                 smsConversations: true,
@@ -133,11 +166,10 @@ router.get(
         prisma.lead.count({ where }),
       ]);
 
-      // Transform the data to match the expected frontend format
       const transformedLeads = leads.map((lead) => ({
         ...lead,
-        contacts: lead.contacts, // Keep contacts array for compatibility
-        smsConversations: Array(lead._count.smsConversations).fill({}), // Create array with count for length check
+        contacts: lead.contacts,
+        smsConversations: Array(lead._count.smsConversations).fill({}),
       }));
 
       res.json({
@@ -230,12 +262,14 @@ router.post(
         source = "MANUAL",
         notes,
         nextFollowUpDate,
+        region,
       } = req.body;
 
       if (!zipCode) {
         res.status(400).json({ error: "ZIP code is required" });
         return;
       }
+      const firstRegion = user.region ? user.region.split(",")[0] : null;
 
       const lead = await prisma.lead.create({
         data: {
@@ -249,7 +283,7 @@ router.post(
           nextFollowUpDate: nextFollowUpDate
             ? new Date(nextFollowUpDate)
             : null,
-          region: user.region,
+          region: region || firstRegion,
           createdById: user.id,
         },
       });
