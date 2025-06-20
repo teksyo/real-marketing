@@ -33,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 # Database and enums
 from prisma import Prisma
 from prisma.enums import LeadStatus, ContactType, LeadPriority, LeadSource
-
+import json
 # Zillow API
 import pyzill
 import urllib3
@@ -105,6 +105,18 @@ class ScraperState:
 # Global state instance
 state = ScraperState()
 
+# -- Global log collector --
+collected_logs: list[dict] = []
+
+def collect_log(message: str, type_: str, name: str = "ZillowScraper"):
+    # Add a log to the in-memory list (can be called anywhere in your code)
+    collected_logs.append({
+        "timestamp": datetime.now().isoformat(),
+        "type": type_,
+        "name": name,
+        "message": message
+    })
+
 # ================== SIGNAL HANDLING ==================
 
 def signal_handler(signum, frame):
@@ -130,7 +142,6 @@ async def run_with_timeout(coro, timeout_seconds: int):
     except Exception as e:
         log_message(f"⚠️  Operation failed: {str(e)}")
         return None
-
 def run_sync_with_timeout(func, timeout_seconds: int, *args, **kwargs):
     """Run synchronous function with timeout protection"""
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -220,17 +231,21 @@ async def get_prisma_client():
         await client.connect()
         state.prisma_client = client
         log_message("✅ Database connected successfully")
+        collect_log("✅ Database connected successfully", type_="SUCCESS", name="DB_Connectivity")
         yield client
     except Exception as e:
         log_message(f"❌ Database connection failed: {e}")
+        collect_log(f"❌ Database connection failed: {e}", type_="ERROR", name="DB_Connectivity")
         raise
     finally:
         try:
             if client.is_connected():
                 await client.disconnect()
                 log_message("✅ Database disconnected")
+                collect_log("✅ Database disconnected", type_="SUCCESS", name="DB_Connectivity")
         except Exception as e:
-            log_message(f"⚠️  Error disconnecting database: {e}")
+            log_message(f"⚠️ Error disconnecting database: {e}")
+            collect_log(f"⚠️ Error disconnecting database: {e}", type_="ERROR", name="DB_Connectivity")
         finally:
             state.prisma_client = None
 
@@ -281,11 +296,12 @@ async def save_listing_to_db(listing: Dict, prisma: Prisma) -> tuple[str, Option
             prisma.lead.create(data=listing_data),
             5
         )
-        
+        collect_log("✅ Lead created successfully", type_="SUCCESS", name="Lead_Creation")
         return ("created", new_lead.id) if new_lead else ("timeout", None)
         
     except Exception as e:
         log_message(f"Error saving listing: {str(e)}")
+        collect_log(f"Error saving listing: {str(e)}", type_="ERROR", name="Lead_Creation")
         return "error", None
 
 async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -> bool:
@@ -303,11 +319,14 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
             proxy_working = run_sync_with_timeout(test_proxy_connection, 20)
             if proxy_working is None:
                 log_message("❌ Proxy test timed out")
+                collect_log("❌ Proxy test timed out", type_="ERROR", name="Proxy_Test")
             elif not proxy_working:
                 log_message("⚠️  Proxy test failed, will try without proxy")
+                collect_log("⚠️  Proxy test failed, will try without proxy", type_="WARNING", name="Proxy_Test")
         else:
-            log_message("⚠️  Skipping proxy test")
+            log_message("⚠️ Skipping proxy test")
             proxy_working = True  # Assume it works
+            collect_log("⚠️ Skipping proxy test", type_="WARNING", name="Proxy_Test")
         
         # Get map bounds
         bounds = get_us_map_bounds()
@@ -318,6 +337,7 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
             if proxy_working:
                 proxy_url = get_random_proxy()
                 log_message(f"Using proxy: {proxy_url is not None}")
+                collect_log(f"Using proxy: {proxy_url is not None}", type_="SUCCESS", name="Proxy_Test")
             
             try:
                 return pyzill.for_sale(
@@ -334,6 +354,7 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
                 if proxy_url:
                     log_message(f"⚠️  Proxy request failed: {e}")
                     log_message("🔄 Retrying without proxy...")
+                    collect_log(f"⚠️  Proxy request failed: {e} 🔄 Retrying without proxy...", type_="WARNING", name="Proxy_Test")
                     return pyzill.for_sale(
                         pagination=1,
                         search_value="",
@@ -352,10 +373,12 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
         
         if response is None:
             log_message("❌ Listings fetch timed out or failed")
+            collect_log("❌ Listings fetch timed out or failed", type_="ERROR", name="Zillow_List_Fetch")
             return False
 
         if not response or not isinstance(response, dict):
             log_message("❌ No valid response received from Zillow")
+            collect_log("❌ No valid response received from Zillow", type_="ERROR", name="Zillow_List_Fetch")
             return False
             
         # Extract results
@@ -364,10 +387,12 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
             if key in response:
                 results = response[key]
                 log_message(f"Found {len(results)} listings in '{key}' key")
+                collect_log(f"Found {len(results)} listings in '{key}' key", type_="SUCCESS", name="Zillow_List_Fetch")
                 break
                 
         if not results:
             log_message("❌ No listings found in response")
+            collect_log("❌ No listings found in response", type_="ERROR", name="Zillow_List_Fetch")
             return False
         
         # Process listings
@@ -375,7 +400,8 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
         
         for idx, result in enumerate(results[:MAX_LISTINGS_TO_FETCH]):
             if state.is_timeout():
-                log_message(f"⚠️  Global timeout reached at listing {idx}")
+                log_message(f"⚠️ Global timeout reached at listing {idx}")
+                collect_log(f"⚠️ Global timeout reached at listing {idx}", type_="WARNING", name="Zillow_List_Fetch")
                 break
                 
             try:
@@ -388,6 +414,7 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
                 if status == "created":
                     new_count += 1
                     log_message(f"✅ Created listing {idx+1}: ID {lead_id}")
+                    collect_log(f"✅ Created listing {idx+1}: ID {lead_id}", type_="SUCCESS", name="Zillow_List_Fetch")
                 elif status == "exists":
                     existing_count += 1
                 elif status == "timeout":
@@ -398,6 +425,7 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
                     
             except Exception as e:
                 log_message(f"Error processing listing {idx}: {str(e)}")
+                collect_log(f"Error processing listing {idx}: {str(e)}", type_="ERROR", name="Zillow_List_Fetch")
                 error_count += 1
             
             # Small delay between listings
@@ -405,10 +433,12 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
                 await asyncio.sleep(random.uniform(0.2, 0.8))
         
         log_message(f"📊 Listings Summary: {new_count} new, {existing_count} existing, {error_count} errors, {timeout_count} timeouts")
+        collect_log(f"📊 Listings Summary: {new_count} new, {existing_count} existing, {error_count} errors, {timeout_count} timeouts", type_="SUCCESS", name="Zillow_List_Fetch")
         return True
                 
     except Exception as e:
         log_message(f"❌ Error fetching listings: {str(e)}")
+        collect_log(f"❌ Error fetching listings: {str(e)}", type_="ERROR", name="Zillow_List_Fetch")
         return False
 
 # ================== CONTACT FUNCTIONS ==================
@@ -502,7 +532,8 @@ def extract_agent_info(soup: BeautifulSoup) -> Dict[str, any]:
         return agent_info
         
     except Exception as e:
-        log_message(f"   ❌ Error extracting agent info: {str(e)}")
+        log_message(f" ❌ Error extracting agent info: {str(e)}")
+        collect_log(f" ❌ Error extracting agent info: {str(e)}", type_="ERROR", name="Agent_Info_Fetch")
         return {'names': [], 'phones': [], 'companies': []}
 
 def is_valid_agent_name(name: str) -> bool:
@@ -559,7 +590,8 @@ async def scrape_property_contacts(url: str) -> Optional[Dict]:
                 return agent_info
                 
     except Exception as e:
-        log_message(f"   ❌ Error scraping {url}: {str(e)}")
+        log_message(f"❌ Error scraping {url}: {str(e)}")
+        collect_log(f"❌ Error scraping {url}: {str(e)}", type_="ERROR", name="Property_Contacts_Fetch")
     
     return None
 
@@ -590,7 +622,8 @@ async def create_contacts_from_scraped_data(agent_info: Dict, lead_id: int, pris
                 
                 if result:
                     contacts_created += 1
-                    log_message(f"     ✅ Created: {agent_info['names'][i]} - {agent_info['phones'][i]}")
+                    log_message(f"✅ Created: {agent_info['names'][i]} - {agent_info['phones'][i]}")
+                    collect_log(f"✅ Created: {agent_info['names'][i]} - {agent_info['phones'][i]}", type_="SUCCESS", name="Contacts_From_ScrapedData")
         
         # Create remaining phone contacts
         remaining_phones = agent_info['phones'][contacts_created:]
@@ -609,10 +642,12 @@ async def create_contacts_from_scraped_data(agent_info: Dict, lead_id: int, pris
             
             if result:
                 contacts_created += 1
-                log_message(f"     ✅ Created: Unknown - {phone}")
+                log_message(f"✅ Created: Unknown - {phone}")
+                collect_log(f"✅ Created: Unknown - {phone}", type_="SUCCESS", name="Contacts_From_ScrapedData")
     
     except Exception as e:
-        log_message(f"     ❌ Error creating contacts: {str(e)}")
+        log_message(f"❌ Error creating contacts: {str(e)}")
+        collect_log(f"❌ Error creating contacts: {str(e)}", type_="ERROR", name="Contacts_From_ScrapedData")
     
     return contacts_created
 
@@ -637,21 +672,25 @@ async def process_zillow_contacts(prisma: Prisma) -> bool:
         
         if not leads:
             log_message("✅ No leads need contact updates")
+            collect_log("✅ No leads need contact updates", type_="SUCCESS", name="Contacts_Process")
             return True
         
         log_message(f"📊 Processing {len(leads)} leads for contacts")
+        collect_log(f"📊 Processing {len(leads)} leads for contacts", type_="SUCCESS", name="Contacts_Process")
         
         total_contacts_created = 0
         total_processed = 0
         
         for lead in leads:
             if state.is_timeout():
-                log_message(f"⚠️  Timeout reached, stopping at lead {total_processed}")
+                log_message(f"⚠️ Timeout reached, stopping at lead {total_processed}")
+                collect_log(f"⚠️ Timeout reached, stopping at lead {total_processed}", type_="WARNING", name="Contacts_Process")
                 break
                 
             try:
                 total_processed += 1
                 log_message(f"🔍 Lead {total_processed}/{len(leads)} - {lead.zid}")
+                collect_log(f"🔍 Lead {total_processed}/{len(leads)} - {lead.zid}", type_="SUCCESS", name="Contacts_Process")
                 
                 # Increment attempts
                 await run_with_timeout(
@@ -670,11 +709,14 @@ async def process_zillow_contacts(prisma: Prisma) -> bool:
                     total_contacts_created += contacts_created
                     
                     if contacts_created > 0:
-                        log_message(f"   ✅ Created {contacts_created} contacts")
+                        log_message(f"✅ Created {contacts_created} contacts")
+                        collect_log(f"✅ Created {contacts_created} contacts", type_="SUCCESS", name="Contacts_Process")
                     else:
-                        log_message(f"   ⚠️  No contacts created")
+                        log_message(f"⚠️ No contacts created")
+                        collect_log(f"⚠️ No contacts created", type_="WARNING", name="Contacts_Process")
                 else:
-                    log_message(f"   ❌ No contact info found")
+                    log_message(f"❌ No contact info found")
+                    collect_log(f"❌ No contact info found", type_="ERROR", name="Contact_Process")
                 
                 # Delay between requests
                 if total_processed < len(leads) and not state.is_timeout():
@@ -682,13 +724,16 @@ async def process_zillow_contacts(prisma: Prisma) -> bool:
                     await asyncio.sleep(delay)
                     
             except Exception as e:
-                log_message(f"   ❌ Error processing lead: {str(e)}")
+                log_message(f"❌ Error processing lead: {str(e)}")
+                collect_log(f"❌ Error processing lead: {str(e)}", type_="ERROR", name="Contact_Process")
         
         log_message(f"📊 Contacts Summary: {total_processed} processed, {total_contacts_created} contacts created")
+        collect_log(f"📊 Contacts Summary: {total_processed} processed, {total_contacts_created} contacts created", type_="SUCCESS", name="Contact_Process")
         return True
         
     except Exception as e:
         log_message(f"❌ Error in contact processing: {str(e)}")
+        collect_log(f"❌ Error in contact processing: {str(e)}",type_="ERROR", name="Contact_Process")
         return False
 # ================== MAIN FUNCTION ==================
 
@@ -704,6 +749,7 @@ async def main():
     start_time = datetime.now()
     log_message("🚀 Starting Complete Zillow Scraper")
     log_message(f"Max runtime: {MAX_RUNTIME_MINUTES} minutes")
+    collect_log(f"🚀 Starting Complete Zillow Scraper, Max runtime: {MAX_RUNTIME_MINUTES} minutes", type_="SUCCESS", name="Scraping_Process")
     
     ensure_data_directory()
     setup_signal_handlers()
@@ -749,18 +795,24 @@ async def main():
             log_message("FINAL SUMMARY")
             log_message("=" * 50)
             log_message(f"Runtime: {runtime.total_seconds()/60:.1f} minutes")
+            collect_log(f"Runtime: {runtime.total_seconds()/60:.1f} minutes", type_="SUCCESS", name="Scraping_Process")
             log_message(f"Listings: {'✅ Success' if success_listings else '❌ Failed'}")
+            collect_log(f"Listings: {'✅ Success' if success_listings else '❌ Failed'}", type_="SUCCESS", name="Scraping_Process")
             log_message(f"Contacts: {'✅ Success' if success_contacts else '❌ Failed/Skipped'}")
+            collect_log(f"Contacts: {'✅ Success' if success_contacts else '❌ Failed/Skipped'}", type_="SUCCESS", name="Scraping_Process")
             
             if success_listings and success_contacts:
                 log_message("🎉 Scraper completed successfully!")
+                collect_log("🎉 Scraper completed successfully!", type_="SUCCESS", name="Scraping_Process")
                 return True
             else:
-                log_message("⚠️  Scraper completed with issues")
+                log_message("⚠️ Scraper completed with issues")
+                collect_log("⚠️ Scraper completed with issues", type_="WARNING", name="Scraping_Process")
                 return False
                 
     except Exception as e:
         log_message(f"❌ Critical error: {e}")
+        collect_log(f"❌ Critical error: {e}", type_="ERROR", name="Scraping_Process")
         import traceback
         traceback.print_exc()
         return False
@@ -864,6 +916,24 @@ def ensure_data_directory():
     except Exception as e:
         log_message(f"❌ Error creating data directory: {e}")
 
+from typing import cast, Any
+async def save_collected_logs_to_db(prisma: Prisma, type_: str = "SUCCESS", name: str = "BatchRun"):
+    print(f"collected logs: {collected_logs}")
+    log_message(f"collected logs: {collected_logs}")
+
+    if not collected_logs:
+        return
+    try:
+        await prisma.log.create(
+            data={
+                "type": type_,
+                "name": name,
+                "logData": cast(Any, collected_logs),  # ✅ Tell Prisma "trust me, this is JSON"
+            }
+        )
+        collected_logs.clear()  # Reset for next batch
+    except Exception as e:
+        print(f"Failed to save logs: {e}")
 
 if __name__ == "__main__":
     print("🟢 Script started")
@@ -893,24 +963,34 @@ if __name__ == "__main__":
         log_message(f"❌ Script failed with error: {e}")
         import traceback
         traceback.print_exc()
-    
     finally:
-        # Force exit - critical for Render cron jobs
         print("🔚 Forcing script termination")
         try:
+            # Save logs and cleanup using an async function
+            import asyncio
+
+            async def _save_logs_and_cleanup():
+                from prisma import Prisma
+                async with get_prisma_client() as prisma:
+                    await save_collected_logs_to_db(prisma, type_="SUCCESS", name="ZillowBatch")
+
+            asyncio.run(_save_logs_and_cleanup())
+
             # Close any remaining file descriptors
-            import resource
+            import platform
+            if platform.system() != "Windows":
+                import resource
             max_fd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
             for fd in range(3, min(max_fd, 256)):  # Skip stdin, stdout, stderr
                 try:
                     os.close(fd)
                 except OSError:
                     pass
-        except:
-            pass
-        
+        except Exception as e:
+            print(f"❌ Error during final log save or cleanup: {e}")
+
         # Force garbage collection
         gc.collect()
-        
+
         # Force exit the process
         os._exit(0 if 'success' in locals() and success else 1)
