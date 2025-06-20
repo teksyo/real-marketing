@@ -117,6 +117,12 @@ model LeadActivity {
   user        User         @relation(fields: [userId], references: [id])
 }
 
+model Setting {
+  key   String @id
+  value String
+}
+
+
 model Log {
   id        Int       @id @default(autoincrement())
   type      LogType
