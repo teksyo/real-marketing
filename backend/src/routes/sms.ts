@@ -26,7 +26,7 @@ async function getOrBuyTwilioPhone(): Promise<string> {
     smsEnabled: true,
     limit: 1,
   });
-
+  console.log("Available Twilio numbers:", numbers);
   if (numbers.length === 0) {
     throw new Error("No available Twilio numbers with SMS support");
   }
@@ -34,7 +34,7 @@ async function getOrBuyTwilioPhone(): Promise<string> {
   const purchased = await twilioClient.incomingPhoneNumbers.create({
     phoneNumber: numbers[0].phoneNumber,
   });
-
+  console.log("Purchased Twilio number:", purchased.phoneNumber);
   // Save to DB for future use
   await prisma.setting.upsert({
     where: { key: "TWILIO_PHONE" },
@@ -197,10 +197,15 @@ router.post(
         return;
       }
 
+      // ✅ Normalize phone number
+      let normalizedPhone = phoneNumber.trim().replace(/\D/g, "");
+      if (!normalizedPhone.startsWith("1")) {
+        normalizedPhone = "1" + normalizedPhone;
+      }
+      normalizedPhone = "+" + normalizedPhone;
+
       const lead = await prisma.lead.findFirst({
-        where: {
-          id: leadId,
-        },
+        where: { id: leadId },
       });
 
       if (!lead) {
@@ -211,24 +216,42 @@ router.post(
       const existingConversation = await prisma.smsConversation.findFirst({
         where: {
           leadId,
-          phoneNumber,
+          phoneNumber: normalizedPhone,
         },
       });
 
       if (existingConversation) {
+        let messageStatus: "SENT" | "FAILED" = "SENT";
+        let sentAt: Date | undefined = undefined;
+        let errorMessage: string | undefined = undefined;
+
+        try {
+          const result = await twilioClient.messages.create({
+            body: initialMessage,
+            from:
+              existingConversation.phoneNumber ?? (await getOrBuyTwilioPhone()),
+            to: normalizedPhone,
+          });
+          sentAt = new Date(); // or result.dateCreated
+        } catch (twilioError: any) {
+          messageStatus = "FAILED";
+          errorMessage = twilioError?.message || "Failed to send message";
+          console.error("Twilio send error:", errorMessage);
+        }
+
         const conversation = await prisma.$transaction(async (tx) => {
-          const res = await tx.smsMessage.create({
+          await tx.smsMessage.create({
             data: {
               conversationId: existingConversation.id,
               direction: "OUTBOUND",
               content: initialMessage,
-              phoneNumber,
-              // status: messageStatus,
-              status: "SENT",
-              sentAt: new Date(), // Use now for initial message
-              // errorMessage,
+              phoneNumber: normalizedPhone,
+              status: messageStatus,
+              sentAt: new Date(),
+              errorMessage,
             },
           });
+
           return await tx.smsConversation.findUnique({
             where: { id: existingConversation.id },
             include: {
@@ -244,41 +267,36 @@ router.post(
             },
           });
         });
+
         res.status(201).json(conversation);
-        // res.status(400).json({
-        //   error: "Conversation already exists for this lead and phone number",
-        // });
         return;
       }
 
-      // Get or buy Twilio number
-      // const senderPhone = await getOrBuyTwilioPhone();
+      const senderPhone = await getOrBuyTwilioPhone();
 
-      // // Try sending SMS
-      // let messageStatus: "SENT" | "FAILED" = "SENT";
-      // let sentAt: Date | undefined = undefined;
-      // let errorMessage: string | undefined = undefined;
+      let messageStatus: "SENT" | "FAILED" = "SENT";
+      let sentAt: Date | undefined = undefined;
+      let errorMessage: string | undefined = undefined;
 
-      // try {
-      //   const result = await twilioClient.messages.create({
-      //     body: initialMessage,
-      //     from: senderPhone,
-      //     to: phoneNumber,
-      //   });
-      //   sentAt = new Date(); // Use now — you can also use `result.dateCreated` if needed
-      // } catch (twilioError: any) {
-      //   messageStatus = "FAILED";
-      //   errorMessage = twilioError?.message || "Failed to send message";
-      //   console.error("Twilio send error:", errorMessage);
-      // }
+      try {
+        const result = await twilioClient.messages.create({
+          body: initialMessage,
+          from: senderPhone,
+          to: normalizedPhone,
+        });
+        sentAt = new Date();
+      } catch (twilioError: any) {
+        messageStatus = "FAILED";
+        errorMessage = twilioError?.message || "Failed to send message";
+        console.error("Twilio send error:", errorMessage);
+      }
 
-      // Save conversation and message
       const conversation = await prisma.$transaction(async (tx) => {
         const convo = await tx.smsConversation.create({
           data: {
             leadId,
             userId: user.id,
-            phoneNumber,
+            phoneNumber: normalizedPhone,
           },
         });
 
@@ -287,11 +305,10 @@ router.post(
             conversationId: convo.id,
             direction: "OUTBOUND",
             content: initialMessage,
-            phoneNumber,
-            // status: messageStatus,
-            status: "SENT",
-            sentAt: new Date(), // Use now for initial message
-            // errorMessage,
+            phoneNumber: normalizedPhone,
+            status: messageStatus,
+            sentAt: new Date(),
+            errorMessage,
           },
         });
 
@@ -318,6 +335,7 @@ router.post(
     }
   }
 );
+
 // POST /api/sms/send - Send SMS message
 router.post(
   "/send",
@@ -329,13 +347,13 @@ router.post(
       const { conversationId, content, phoneNumber } = req.body;
 
       if (!conversationId || !content) {
-        res
-          .status(400)
-          .json({ error: "Conversation ID and content are required" });
+        res.status(400).json({
+          error: "Conversation ID and content are required",
+        });
         return;
       }
 
-      // Check if conversation belongs to user
+      // Fetch conversation and ensure it belongs to the user
       const conversation = await prisma.smsConversation.findFirst({
         where: {
           id: conversationId,
@@ -351,28 +369,56 @@ router.post(
         return;
       }
 
-      // TODO: Integrate with actual SMS service (Twilio, etc.)
-      // For now, we'll just save the message as sent
+      // ✅ Normalize recipient phone number (use provided one or fallback)
+      let normalizedPhone = (phoneNumber || conversation.phoneNumber || "")
+        .trim()
+        .replace(/\D/g, "");
+      if (!normalizedPhone.startsWith("1")) {
+        normalizedPhone = "1" + normalizedPhone;
+      }
+      normalizedPhone = "+" + normalizedPhone;
+
+      // ✅ Send SMS via Twilio
+      let messageStatus: "SENT" | "FAILED" = "SENT";
+      let sentAt: Date | undefined = undefined;
+      let errorMessage: string | undefined = undefined;
+      const senderPhone = await getOrBuyTwilioPhone();
+      try {
+        const result = await twilioClient.messages.create({
+          body: content,
+          from: senderPhone,
+          to: normalizedPhone,
+        });
+        sentAt = new Date(); // or result.dateCreated
+      } catch (twilioError: any) {
+        messageStatus = "FAILED";
+        errorMessage = twilioError?.message || "Failed to send SMS";
+        console.error("Twilio send error:", errorMessage);
+      }
+
+      // ✅ Save message record in DB
       const message = await prisma.smsMessage.create({
         data: {
           conversationId,
           direction: "OUTBOUND",
           content,
-          status: "SENT",
-          phoneNumber: conversation.phoneNumber,
+          status: messageStatus,
+          phoneNumber: normalizedPhone,
+          sentAt: sentAt || new Date(),
+          errorMessage,
         },
       });
 
-      // Update conversation timestamp
+      // ✅ Update conversation timestamp
       await prisma.smsConversation.update({
         where: { id: conversationId },
         data: { updatedAt: new Date() },
       });
 
-      // Log SMS activity
+      // ✅ Log activity
       await logSmsActivity(conversation.leadId, user.id, "SMS_SENT", content, {
         messageId: message.id,
-        phoneNumber: conversation.phoneNumber,
+        phoneNumber: normalizedPhone,
       });
 
       res.status(201).json(message);
