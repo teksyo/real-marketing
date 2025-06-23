@@ -286,11 +286,11 @@ export const smsService = {
   },
 
   // Create SMS conversation
-  createConversation: async (leadId, phoneNumber) => {
+  createConversation: async (messageDetail) => {
     try {
       const response = await apiFetch(`${API_BASE_URL}/api/sms/conversations`, {
         method: "POST",
-        body: JSON.stringify({ leadId, phoneNumber }),
+        body: JSON.stringify({ messageDetail }),
       });
 
       if (!response.ok) {

@@ -17,58 +17,7 @@ import toast from "react-hot-toast";
 import axios from "axios";
 
 // Available regions list
-const AVAILABLE_REGIONS = [
-  "AL",
-  "AK",
-  "AZ",
-  "AR",
-  "CA",
-  "CO",
-  "CT",
-  "DE",
-  "FL",
-  "GA",
-  "HI",
-  "ID",
-  "IL",
-  "IN",
-  "IA",
-  "KS",
-  "KY",
-  "LA",
-  "ME",
-  "MD",
-  "MA",
-  "MI",
-  "MN",
-  "MS",
-  "MO",
-  "MT",
-  "NE",
-  "NV",
-  "NH",
-  "NJ",
-  "NM",
-  "NY",
-  "NC",
-  "ND",
-  "OH",
-  "OK",
-  "OR",
-  "PA",
-  "RI",
-  "SC",
-  "SD",
-  "TN",
-  "TX",
-  "UT",
-  "VT",
-  "VA",
-  "WA",
-  "WV",
-  "WI",
-  "WY",
-];
+const AVAILABLE_REGIONS = ["FL", "GA", "LA"];
 
 const USER_ROLES = [
   { value: "USER", label: "User" },
@@ -261,7 +210,7 @@ export default function AdminUsersPage() {
   const openEditRegionsModal = (user) => {
     setSelectedUser(user);
     const userRegions =
-      user.region && user.region !== "ALL"
+      user.region && user.region !== "ALL" && user.region !== "NO"
         ? user.region.split(",").map((r) => r.trim())
         : [];
     setEditingRegions(userRegions);
@@ -541,7 +490,7 @@ export default function AdminUsersPage() {
                                       <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
                                         ALL REGIONS
                                       </span>
-                                    ) : user.region ? (
+                                    ) : user.region && user.region !== "NO" ? (
                                       <div className="flex flex-wrap gap-1">
                                         {user.region
                                           .split(",")

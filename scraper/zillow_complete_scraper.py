@@ -159,13 +159,38 @@ def ensure_data_directory():
     except Exception as e:
         log_message(f"⚠️  Could not create data directory: {e}")
 
+def get_state_bounds(state_code: str) -> Dict:
+    """Get map bounds for a specific state"""
+    state_bounds = {
+        "GA": {  # Georgia
+            "west": -85.605165,
+            "east": -80.751429,
+            "south": 30.355644,
+            "north": 35.000659
+        },
+        "LA": {  # Louisiana
+            "west": -94.043147,
+            "east": -88.758388,
+            "south": 28.855127,
+            "north": 33.019457
+        },
+        "FL": {  # Florida
+            "west": -87.634938,
+            "east": -79.974306,
+            "south": 24.396308,
+            "north": 31.000888
+        }
+    }
+    return state_bounds.get(state_code.upper())
+
 def get_us_map_bounds() -> Dict:
-    """Get map bounds for continental US"""
+    """Get combined map bounds for GA, LA, and FL"""
+    # Combine bounds to cover all three states
     return {
-        "west": -124.848974,
-        "east": -66.885444,
-        "south": 24.396308,
-        "north": 49.384358
+        "west": -94.043147,  # Westernmost point (Louisiana)
+        "east": -79.974306,  # Easternmost point (Florida)
+        "south": 24.396308,  # Southernmost point (Florida)
+        "north": 35.000659   # Northernmost point (Georgia)
     }
 
 def get_random_proxy():
@@ -263,6 +288,18 @@ async def save_listing_to_db(listing: Dict, prisma: Prisma) -> tuple[str, Option
         state_code = listing.get('addressState', '') or 'Unknown'
         region = f"{city}, {state_code}"
         
+        # Skip if not in target states
+        if state_code not in ['GA', 'LA', 'FL']:
+            return "skip", None
+            
+        # Extract full name from address if available
+        full_name = None
+        if listing.get('address'):
+            # Try to extract name from address (usually in format "Owner Name's Address")
+            address_parts = listing['address'].split("'s ", 1)
+            if len(address_parts) > 1:
+                full_name = address_parts[0]
+        
         listing_data = {
             'zid': zpid,
             'address': listing.get('address', '') or None,
@@ -271,6 +308,7 @@ async def save_listing_to_db(listing: Dict, prisma: Prisma) -> tuple[str, Option
             'link': listing.get('detailUrl', '') or None,
             'zipCode': zip_code,
             'region': region,
+            'fullName': full_name,
             'status': LeadStatus.NEW,
             'priority': LeadPriority.MEDIUM,
             'source': LeadSource.ZILLOW,
@@ -309,102 +347,149 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
             log_message("⚠️  Skipping proxy test")
             proxy_working = True  # Assume it works
         
-        # Get map bounds
-        bounds = get_us_map_bounds()
+        # Target states
+        target_states = ['GA', 'LA', 'FL']
+        total_new_count = 0
+        total_existing_count = 0
+        total_error_count = 0
+        total_skipped_count = 0
         
-        # Fetch listings function
-        def fetch_listings():
-            proxy_url = None
-            if proxy_working:
-                proxy_url = get_random_proxy()
-                log_message(f"Using proxy: {proxy_url is not None}")
+        # Fetch listings for each state
+        for state_code in target_states:
+            if state.is_timeout():
+                log_message(f"⚠️  Global timeout reached, stopping at state {state_code}")
+                break
+                
+            log_message(f"\n📍 Fetching listings for {state_code}...")
+            bounds = get_state_bounds(state_code)
             
-            try:
-                return pyzill.for_sale(
-                    pagination=1,
-                    search_value="",
-                    ne_lat=bounds["north"],
-                    ne_long=bounds["east"],
-                    sw_lat=bounds["south"],
-                    sw_long=bounds["west"],
-                    zoom_value=5,
-                    proxy_url=proxy_url
-                )
-            except Exception as e:
-                if proxy_url:
-                    log_message(f"⚠️  Proxy request failed: {e}")
-                    log_message("🔄 Retrying without proxy...")
+            if not bounds:
+                log_message(f"❌ No bounds found for state {state_code}")
+                continue
+            
+            # Fetch listings function
+            def fetch_listings():
+                proxy_url = None
+                if proxy_working:
+                    proxy_url = get_random_proxy()
+                    log_message(f"Using proxy: {proxy_url is not None}")
+                
+                try:
                     return pyzill.for_sale(
                         pagination=1,
                         search_value="",
+                        min_beds=None,
+                        max_beds=None,
+                        min_bathrooms=None,
+                        max_bathrooms=None,
+                        min_price=None,
+                        max_price=None,
                         ne_lat=bounds["north"],
                         ne_long=bounds["east"],
                         sw_lat=bounds["south"],
                         sw_long=bounds["west"],
                         zoom_value=5,
-                        proxy_url=None
+                        proxy_url=proxy_url
                     )
-                else:
-                    raise
+                except Exception as e:
+                    if proxy_url:
+                        log_message(f"⚠️  Proxy request failed: {e}")
+                        log_message("🔄 Retrying without proxy...")
+                        return pyzill.for_sale(
+                            pagination=1,
+                            search_value="",
+                            min_beds=None,
+                            max_beds=None,
+                            min_bathrooms=None,
+                            max_bathrooms=None,
+                            min_price=None,
+                            max_price=None,
+                            ne_lat=bounds["north"],
+                            ne_long=bounds["east"],
+                            sw_lat=bounds["south"],
+                            sw_long=bounds["west"],
+                            zoom_value=5,
+                            proxy_url=None
+                        )
+                    else:
+                        raise
 
-        # Execute with timeout
-        response = run_sync_with_timeout(fetch_listings, OPERATION_TIMEOUT)
-        
-        if response is None:
-            log_message("❌ Listings fetch timed out or failed")
-            return False
-
-        if not response or not isinstance(response, dict):
-            log_message("❌ No valid response received from Zillow")
-            return False
+            # Execute with timeout
+            response = run_sync_with_timeout(fetch_listings, OPERATION_TIMEOUT)
             
-        # Extract results
-        results = []
-        for key in ['listResults', 'mapResults', 'cat1', 'results']:
-            if key in response:
-                results = response[key]
-                log_message(f"Found {len(results)} listings in '{key}' key")
-                break
+            if response is None:
+                log_message(f"❌ Listings fetch timed out or failed for {state_code}")
+                continue
+
+            if not response or not isinstance(response, dict):
+                log_message(f"❌ No valid response received from Zillow for {state_code}")
+                continue
                 
-        if not results:
-            log_message("❌ No listings found in response")
-            return False
-        
-        # Process listings
-        new_count = existing_count = error_count = timeout_count = 0
-        
-        for idx, result in enumerate(results[:MAX_LISTINGS_TO_FETCH]):
-            if state.is_timeout():
-                log_message(f"⚠️  Global timeout reached at listing {idx}")
-                break
-                
-            try:
-                if not isinstance(result, dict):
-                    error_count += 1
-                    continue
-                
-                status, lead_id = await save_listing_to_db(result, prisma)
-                
-                if status == "created":
-                    new_count += 1
-                    log_message(f"✅ Created listing {idx+1}: ID {lead_id}")
-                elif status == "exists":
-                    existing_count += 1
-                elif status == "timeout":
-                    timeout_count += 1
+            # Extract results
+            results = []
+            for key in ['listResults', 'mapResults', 'cat1', 'results']:
+                if key in response:
+                    results = response[key]
+                    log_message(f"Found {len(results)} listings in '{key}' key")
                     break
-                else:
-                    error_count += 1
                     
-            except Exception as e:
-                log_message(f"Error processing listing {idx}: {str(e)}")
-                error_count += 1
+            if not results:
+                log_message(f"❌ No listings found in response for {state_code}")
+                continue
             
-            # Small delay between listings
-            if idx < len(results) - 1 and not state.is_timeout():
-                await asyncio.sleep(random.uniform(0.2, 0.8))
+            # Process listings
+            new_count = existing_count = error_count = skipped_count = 0
+            
+            for idx, result in enumerate(results[:MAX_LISTINGS_TO_FETCH]):
+                if state.is_timeout():
+                    log_message(f"⚠️  Global timeout reached at listing {idx}")
+                    break
+                    
+                try:
+                    if not isinstance(result, dict):
+                        error_count += 1
+                        continue
+                    
+                    status, lead_id = await save_listing_to_db(result, prisma)
+                    
+                    if status == "created":
+                        new_count += 1
+                        log_message(f"✅ Created listing {idx+1}: ID {lead_id}")
+                    elif status == "exists":
+                        existing_count += 1
+                    elif status == "timeout":
+                        error_count += 1
+                        break
+                    elif status == "skip":
+                        skipped_count += 1
+                    else:
+                        error_count += 1
+                        
+                except Exception as e:
+                    log_message(f"Error processing listing {idx}: {str(e)}")
+                    error_count += 1
+                
+                # Small delay between listings
+                if idx < len(results) - 1 and not state.is_timeout():
+                    await asyncio.sleep(random.uniform(0.2, 0.8))
+            
+            log_message(f"\n📊 {state_code} Summary: {new_count} new, {existing_count} existing, {error_count} errors, {skipped_count} skipped")
+            
+            # Update totals
+            total_new_count += new_count
+            total_existing_count += existing_count
+            total_error_count += error_count
+            total_skipped_count += skipped_count
+            
+            # Delay between states
+            if not state.is_timeout() and state_code != target_states[-1]:
+                await asyncio.sleep(random.uniform(2, 5))
         
-        log_message(f"📊 Listings Summary: {new_count} new, {existing_count} existing, {error_count} errors, {timeout_count} timeouts")
+        log_message(f"\n📊 Overall Summary:")
+        log_message(f"- New leads: {total_new_count}")
+        log_message(f"- Existing leads: {total_existing_count}")
+        log_message(f"- Errors: {total_error_count}")
+        log_message(f"- Skipped (out of state): {total_skipped_count}")
         return True
                 
     except Exception as e:
@@ -690,6 +775,7 @@ async def process_zillow_contacts(prisma: Prisma) -> bool:
     except Exception as e:
         log_message(f"❌ Error in contact processing: {str(e)}")
         return False
+
 # ================== MAIN FUNCTION ==================
 
 async def main():
