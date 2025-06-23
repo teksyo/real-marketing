@@ -258,18 +258,29 @@ export default function Dashboard() {
               </h2>
               {/* Information Message */}
               <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                <p className="text-sm text-blue-800">
-                  <strong>Information:</strong> You have been assigned to these
-                  regions: <strong>{region}</strong>, which are highlighted by{" "}
-                  <span className="px-3 py-1 rounded-md text-sm font-medium transition-colors inline-flex items-center gap-2 border border-gray-300 bg-white hover:bg-gray-100 mx-1">
-                    <span
-                      className="w-3 h-3 inline-block rounded-full"
-                      style={{ backgroundColor: "#A7C8F0" }}
-                    ></span>
-                    Region Color
-                  </span>{" "}
-                  on the map. Click on a region in the map to filter the data.
-                </p>
+                {region === "NO" ? (
+                  <p className="text-sm text-blue-800">
+                    <strong>Information:</strong> You don't have any assigned
+                    region.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-sm text-blue-800">
+                      <strong>Information:</strong> You have been assigned to
+                      these regions: <strong>{region}</strong>, which are
+                      highlighted by{" "}
+                      <span className="px-3 py-1 rounded-md text-sm font-medium transition-colors inline-flex items-center gap-2 border border-gray-300 bg-white hover:bg-gray-100 mx-1">
+                        <span
+                          className="w-3 h-3 inline-block rounded-full"
+                          style={{ backgroundColor: "#A7C8F0" }}
+                        ></span>
+                        Region Color
+                      </span>{" "}
+                      on the map. Click on a region in the map to filter the
+                      data.
+                    </p>
+                  </>
+                )}
               </div>
 
               <ClientOnly
