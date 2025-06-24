@@ -26,7 +26,6 @@ model Lead {
   id                   Int               @id @default(autoincrement())
   address              String?
   price                String?
-  fullName             String?
   beds                 String?
   link                 String?
   zipCode              String
@@ -122,7 +121,6 @@ model Setting {
   key   String @id
   value String
 }
-
 
 model Log {
   id        Int       @id @default(autoincrement())
