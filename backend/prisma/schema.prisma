@@ -132,6 +132,13 @@ model Log {
   createdAt DateTime  @default(now())
 }
 
+model SmsOptOut {
+  id           Int      @id @default(autoincrement())
+  phoneNumber  String   @unique
+  reason       String?
+  optedOutAt   DateTime @default(now())
+}
+
 enum LogType {
   WARNING
   ERROR
