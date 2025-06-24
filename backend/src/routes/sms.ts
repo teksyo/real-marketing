@@ -2,7 +2,7 @@ import express, { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
 import { authMiddleware } from "../middleware/auth";
 import { Twilio } from "twilio";
-
+import MessagingResponse from "twilio/lib/twiml/MessagingResponse";
 const router = express.Router();
 const prisma = new PrismaClient();
 
@@ -71,6 +71,98 @@ const logSmsActivity = async (
     console.error("Failed to log SMS activity:", error);
   }
 };
+
+router.post(
+  "/twilio/inbound",
+  async (req: Request, res: Response): Promise<void> => {
+    const twiml = new MessagingResponse();
+
+    const incomingMessage = req.body.Body?.trim();
+    const fromNumber = req.body.From; // Client's number
+    const toNumber = req.body.To; // Your Twilio number (should match Setting.value)
+
+    const STOP_WORDS = ["STOP", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"];
+    const normalizedFrom = fromNumber.replace(/\D/g, "").replace(/^1/, "");
+    const normalizedTo = toNumber.replace(/\D/g, "").replace(/^1/, "");
+
+    try {
+      // ✅ Handle opt-out
+      if (STOP_WORDS.includes(incomingMessage.toUpperCase())) {
+        await prisma.smsOptOut.upsert({
+          where: { phoneNumber: fromNumber },
+          update: { optedOutAt: new Date(), reason: "User replied with STOP" },
+          create: { phoneNumber: fromNumber, reason: "User replied with STOP" },
+        });
+
+        twiml.message(
+          "You have been unsubscribed. Reply START to opt back in."
+        );
+        res.type("text/xml").send(twiml.toString());
+        return;
+      }
+
+      // ✅ Handle opt-in
+      if (incomingMessage.toUpperCase() === "START") {
+        await prisma.smsOptOut.deleteMany({
+          where: { phoneNumber: fromNumber },
+        });
+        twiml.message(
+          "You have been resubscribed. You'll now receive messages."
+        );
+        res.type("text/xml").send(twiml.toString());
+        return;
+      }
+
+      // ✅ Find active Twilio number from Setting
+      const twilioNumberSetting = await prisma.setting.findUnique({
+        where: { key: "TWILIO_PHONE" },
+      });
+
+      if (!twilioNumberSetting || twilioNumberSetting.value !== toNumber) {
+        console.error("Twilio number mismatch");
+        res.status(400).send("Invalid destination number.");
+      }
+
+      // ✅ Match conversation using `lead phoneNumber + twilioNumber`
+      const conversation = await prisma.smsConversation.findFirst({
+        where: {
+          phoneNumber: fromNumber,
+          // If multiple users share a Twilio number, you may need to scope by userId
+        },
+        orderBy: { updatedAt: "desc" },
+      });
+
+      if (!conversation) {
+        console.warn("No matching conversation found.");
+        res.status(200).send(); // Don't bounce Twilio if we just want to ignore
+        return;
+      }
+
+      // ✅ Save incoming message
+      await prisma.smsMessage.create({
+        data: {
+          conversationId: conversation.id,
+          direction: "INBOUND",
+          content: incomingMessage,
+          phoneNumber: fromNumber,
+          status: "DELIVERED",
+          sentAt: new Date(),
+        },
+      });
+
+      // ✅ Update conversation timestamp
+      await prisma.smsConversation.update({
+        where: { id: conversation.id },
+        data: { updatedAt: new Date() },
+      });
+
+      res.type("text/xml").send(twiml.toString());
+    } catch (err) {
+      console.error("Inbound SMS handler error:", err);
+      res.status(500).send("Webhook error");
+    }
+  }
+);
 
 // GET /api/sms/conversations - Get all SMS conversations for user
 router.get(
