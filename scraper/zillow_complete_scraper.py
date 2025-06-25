@@ -72,8 +72,8 @@ MAX_CONTACTS_TO_PROCESS = 8
 MAX_RUNTIME_MINUTES = 6  # Reduced for reliable cron execution
 
 # Timeout settings
-REQUEST_TIMEOUT = 30
-SCRAPER_TIMEOUT = 25
+REQUEST_TIMEOUT = 60
+SCRAPER_TIMEOUT = 55
 OPERATION_TIMEOUT = 180  # 3 minutes max
 
 # Directory for storing debug data
@@ -272,14 +272,9 @@ async def save_listing_to_db(listing: Dict, prisma: Prisma) -> tuple[str, Option
             return "error", None
             
         # Check if listing already exists
-        existing = await run_with_timeout(
-            prisma.lead.find_unique(where={'zid': zpid}),
-            5
-        )
+        existing = await prisma.lead.find_unique(where={'zid': zpid})
         
-        if existing is None:  # Timeout
-            return "timeout", None
-        elif existing:  # Record exists
+        if existing:  # Record exists
             return "exists", existing.id
             
         # Prepare listing data
@@ -308,23 +303,40 @@ async def save_listing_to_db(listing: Dict, prisma: Prisma) -> tuple[str, Option
             'link': listing.get('detailUrl', '') or None,
             'zipCode': zip_code,
             'region': region,
-            'fullName': full_name,
             'status': LeadStatus.NEW,
             'priority': LeadPriority.MEDIUM,
             'source': LeadSource.ZILLOW,
             'contactFetchAttempts': 0
         }
+        new_lead = await prisma.lead.create(data=listing_data)
         
-        new_lead = await run_with_timeout(
-            prisma.lead.create(data=listing_data),
-            5
-        )
         
         return ("created", new_lead.id) if new_lead else ("timeout", None)
         
     except Exception as e:
         log_message(f"Error saving listing: {str(e)}")
         return "error", None
+
+def get_property_by_zpid(zpid: str, proxy_url: Optional[str] = None) -> Optional[Dict]:
+    """Fetch property details by ZPID using pyzill"""
+    log_message(f"Fetching property by ZPID: {zpid}")
+    try:
+        from pyzill import Zill         # Correct import
+        
+        # Manually create a session and call the method
+        zill = Zill()
+        details = zill.get_property_by_zpid(zpid, proxy_url=proxy_url)
+        
+        if details and isinstance(details, dict):
+            log_message(f"✅ Successfully fetched details for ZPID {zpid}")
+            return details
+        else:
+            log_message(f"⚠️  No details returned for ZPID {zpid}")
+            return None
+            
+    except Exception as e:
+        log_message(f"❌ Error fetching property by ZPID {zpid}: {e}")
+        return None
 
 async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -> bool:
     """Fetch listings from Zillow using pyzill"""
@@ -444,7 +456,7 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
                 if state.is_timeout():
                     log_message(f"⚠️  Global timeout reached at listing {idx}")
                     break
-                    
+   
                 try:
                     if not isinstance(result, dict):
                         error_count += 1
@@ -516,8 +528,8 @@ def get_scraperapi_url(target_url: str, **kwargs) -> str:
     url_params = '&'.join([f"{k}={v}" for k, v in params.items()])
     return f"{SCRAPERAPI_URL}?{url_params}"
 
-def extract_phone_numbers(html_content: str) -> List[str]:
-    """Extract phone numbers from HTML content"""
+def extract_phone_numbers(text_content: str) -> List[str]:
+    """Extract phone numbers from a string of text."""
     phone_patterns = [
         r'\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b',
         r'\(\d{3}\)\s*\d{3}[-.\s]?\d{4}',
@@ -527,7 +539,7 @@ def extract_phone_numbers(html_content: str) -> List[str]:
     
     phone_numbers = set()
     for pattern in phone_patterns:
-        matches = re.findall(pattern, html_content)
+        matches = re.findall(pattern, text_content)
         for match in matches:
             phone = re.sub(r'[^\d]', '', match)
             if len(phone) == 10:
@@ -540,66 +552,102 @@ def extract_phone_numbers(html_content: str) -> List[str]:
     
     return list(phone_numbers)
 
-def extract_agent_info(soup: BeautifulSoup) -> Dict[str, any]:
-    """Extract agent information from Zillow property page HTML"""
-    agent_info = {'names': [], 'phones': [], 'companies': []}
+def extract_agent_info(soup: BeautifulSoup) -> List[Dict[str, str]]:
+    # Step 1: Find the <script> tag that contains 'listedBy'
+    for script in soup.find_all("script"):
+        if 'listedBy' in script.text:
+            script_text = script.text
+            break
+    else:
+        return []
+    
+    # Step 2: Match the escaped "listedBy" JSON block
+    match = re.search(r'\\"listedBy\\":(\[.*?\])', script_text, re.DOTALL)
+    if not match:
+        return []
+    
+    log_message(match.group(1))  # Log the raw captured JSON for debugging
+    
+    # Step 3: Extract using regex directly on the raw string (with escaped quotes)
+    listed_by_str = match.group(1)
+    
+    # Initialize variables
+    agent_name = agent_phone = company = None
     
     try:
-        # Extract phone numbers
-        phones = extract_phone_numbers(str(soup))
-        agent_info['phones'].extend(phones[:5])  # Limit phones
+        # Extract agent name using regex (looking for escaped quotes)
+        name_match = re.search(r'\\"id\\":\s*\\"NAME\\".*?\\"text\\":\s*\\"([^"\\]*)\\"', listed_by_str)
+        if name_match:
+            agent_name = name_match.group(1)
+            log_message(f"Found agent name: {agent_name}")
+        else:
+            log_message("No agent name found in regex match")
         
-        # Extract agent names - simplified version
-        page_text = soup.get_text()
+        # Extract agent phone using regex (looking for escaped quotes)
+        phone_match = re.search(r'\\"id\\":\s*\\"PHONE\\".*?\\"text\\":\s*\\"([^"\\]*)\\"', listed_by_str)
+        if phone_match:
+            agent_phone = phone_match.group(1)
+            log_message(f"Found agent phone: {agent_phone}")
+        else:
+            log_message("No agent phone found in regex match")
         
-        # Look for "Listed by" patterns
-        listed_by_patterns = [
-            r'Listed by\s+([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-        ]
+        # Extract company/broker name using regex (optional)
+        broker_match = re.search(r'\\"id\\":\s*\\"BROKER\\".*?\\"elements\\":\s*\[.*?\\"id\\":\s*\\"NAME\\".*?\\"text\\":\s*\\"([^"\\]*)\\"', listed_by_str, re.DOTALL)
+        if broker_match:
+            company = broker_match.group(1)
+            log_message(f"Found company: {company}")
+        else:
+            log_message("No company found in regex match")
         
-        agent_names = set()
-        for pattern in listed_by_patterns:
-            matches = re.findall(pattern, page_text, re.IGNORECASE)
-            for match in matches:
-                name = match.strip()
-                if is_valid_agent_name(name):
-                    agent_names.add(name)
+        # Step 4: Return the contact if we have agent name and phone
+        if agent_name and agent_phone:
+            result = [{
+                "name": agent_name.strip(),
+                "phone": agent_phone.strip(),
+                "company": company.strip() if company else None
+            }]
+            log_message(f"Returning contact: {result}")
+            return result
+        elif agent_name:
+            log_message(f"Found name ({agent_name}) but no phone number")
+        else:
+            log_message("No name or phone found")
         
-        # Look for company information
-        companies = set()
-        company_patterns = [
-            r'([A-Z][a-zA-Z\s&\-]{3,50}(?:Realty|Real Estate|Properties|Group|Team|Associates|Realtors?))',
-            r'(RE/MAX[A-Za-z\s&\-]*)',
-            r'(Coldwell Banker[A-Za-z\s&\-]*)',
-            r'(Century 21[A-Za-z\s&\-]*)',
-        ]
-        
-        for pattern in company_patterns:
-            matches = re.findall(pattern, page_text, re.IGNORECASE)
-            for match in matches[:3]:  # Limit matches
-                company = match.strip()
-                if is_valid_company_name(company):
-                    companies.add(company)
-        
-        agent_info['names'] = list(agent_names)[:3]  # Limit names
-        agent_info['companies'] = list(companies)[:3]  # Limit companies
-        
-        return agent_info
+        return []
         
     except Exception as e:
-        log_message(f"   ❌ Error extracting agent info: {str(e)}")
-        return {'names': [], 'phones': [], 'companies': []}
-
+        log_message(f"Exception in regex extraction: {str(e)}")
+        # Fallback: write debug info and return empty
+        with open("json_debug.txt", "w", encoding="utf-8") as f:
+            f.write(f"Raw match: {match.group(1)}\n")
+            f.write(f"Error: {str(e)}\n")
+        print("⚠️ Regex extraction error:", e)
+        return [] 
+    
 def is_valid_agent_name(name: str) -> bool:
     """Check if extracted text is likely a real estate agent name"""
     if not name or len(name) < 4 or len(name) > 50:
         return False
     
-    parts = name.split()
-    if len(parts) < 2:
+    # Check against company terms first
+    if is_valid_company_name(name):
         return False
+        
+    # Check for common name patterns
+    name_patterns = [
+        r'^[A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?:\s+(?:PA|Jr|Sr|III|IV))?$',  # Standard names with optional suffix
+        r'^[A-Z][a-z]+\s+(?:De|Van|Von)\s+[A-Z][a-z]+$',  # Names with prefixes
+    ]
     
-    # Basic validation
+    if any(re.match(pattern, name) for pattern in name_patterns):
+        return True
+    
+    # Basic validation for other cases
+    parts = name.split()
+    if len(parts) < 2 or len(parts) > 4:
+        return False
+        
+    # Check for property terms that shouldn't be in names
     property_terms = {
         'electric', 'water', 'kitchen', 'bedroom', 'bathroom', 'garage',
         'listing', 'property', 'home', 'house', 'price', 'sold', 'new'
@@ -608,7 +656,7 @@ def is_valid_agent_name(name: str) -> bool:
     for part in parts:
         if part.lower() in property_terms:
             return False
-        if not part.replace('.', '').isalpha():
+        if not part.replace('.', '').replace('-', '').isalpha():
             return False
     
     return True
@@ -626,47 +674,68 @@ def is_valid_company_name(company: str) -> bool:
     
     return any(term in company_lower for term in real_estate_terms)
 
-async def scrape_property_contacts(url: str) -> Optional[Dict]:
-    """Scrape contact information from a property URL"""
-    try:
-        scraper_url = get_scraperapi_url(url)
-        
-        def make_request():
-            return requests.get(scraper_url, timeout=REQUEST_TIMEOUT)
-        
-        response = run_sync_with_timeout(make_request, REQUEST_TIMEOUT + 10)
-        
-        if response and response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            agent_info = extract_agent_info(soup)
-            
-            if agent_info['phones'] or agent_info['names']:
-                return agent_info
-                
-    except Exception as e:
-        log_message(f"   ❌ Error scraping {url}: {str(e)}")
-    
+async def scrape_property_contacts(url: str) -> Optional[List[Dict[str, any]]]:
+    """Scrape contact information from a property URL (single fast attempt, no retries/logs)."""
+    log_message(f"🔍 Scraping contacts from URL: {url}")
+    scraper_url = get_scraperapi_url(url, session_number=random.randint(1000, 9999))
+    def make_request():
+        return requests.get(scraper_url, timeout=REQUEST_TIMEOUT)
+    response = run_sync_with_timeout(make_request, REQUEST_TIMEOUT + 5)
+    if response and response.status_code == 200:
+        soup = BeautifulSoup(response.text, 'html.parser')
+        agent_info = extract_agent_info(soup)
+        log_message(f" Extracted agent info: {agent_info}")
+        if agent_info:
+            return agent_info
     return None
 
-async def create_contacts_from_scraped_data(agent_info: Dict, lead_id: int, prisma: Prisma) -> int:
+async def create_contacts_from_scraped_data(contacts_data: List[Dict[str, any]], lead_id: int, prisma: Prisma) -> int:
     """Create contact records from scraped agent information"""
     contacts_created = 0
+    if not contacts_data:
+        return 0
     
-    try:
-        # Create contacts pairing names with phones
-        if agent_info['names'] and agent_info['phones']:
-            pairs = min(len(agent_info['names']), len(agent_info['phones']))
+    for contact_info in contacts_data:
+        phone = contact_info.get('phone')
+        if not phone:
+            continue
+
+        name = contact_info.get('name')
+        company = contact_info.get('company')
+
+        try:
+            # Check if contact with this phone number already exists
+            existing_contact = await run_with_timeout(
+                prisma.contact.find_first(where={'phoneNumber': phone}),
+                5
+            )
             
-            for i in range(pairs):
+            if existing_contact:
+                # Connect existing contact to lead if not already connected
+                try:
+                    await run_with_timeout(
+                        prisma.lead.update(
+                            where={'id': lead_id},
+                            data={'contacts': {'connect': {'id': existing_contact.id}}}
+                        ),
+                        5
+                    )
+                    contacts_created += 1
+                    log_message(f"     ✅ Connected existing contact: {name or 'Unknown'} - {phone}")
+                except Exception as e:
+                    # Might fail if already connected, which is fine.
+                    log_message(f"     ℹ️  Note connecting existing contact: {str(e)}")
+            else:
+                # Create new contact
                 contact_data = {
-                    'name': agent_info['names'][i],
-                    'phoneNumber': agent_info['phones'][i],
+                    'phoneNumber': phone,
                     'type': ContactType.AGENT,
-                    'company': agent_info['companies'][0] if agent_info['companies'] else None,
                     'leads': {'connect': {'id': lead_id}}
                 }
-                
-                contact_data = {k: v for k, v in contact_data.items() if v is not None}
+                if name:
+                    contact_data['name'] = name
+                if company:
+                    contact_data['company'] = company
                 
                 result = await run_with_timeout(
                     prisma.contact.create(data=contact_data),
@@ -675,29 +744,10 @@ async def create_contacts_from_scraped_data(agent_info: Dict, lead_id: int, pris
                 
                 if result:
                     contacts_created += 1
-                    log_message(f"     ✅ Created: {agent_info['names'][i]} - {agent_info['phones'][i]}")
+                    log_message(f"     ✅ Created new contact: {name or 'Unknown'} - {phone}")
         
-        # Create remaining phone contacts
-        remaining_phones = agent_info['phones'][contacts_created:]
-        for phone in remaining_phones[:2]:  # Limit remaining phones
-            contact_data = {
-                'phoneNumber': phone,
-                'type': ContactType.AGENT,
-                'company': agent_info['companies'][0] if agent_info['companies'] else None,
-                'leads': {'connect': {'id': lead_id}}
-            }
-            
-            result = await run_with_timeout(
-                prisma.contact.create(data=contact_data),
-                5
-            )
-            
-            if result:
-                contacts_created += 1
-                log_message(f"     ✅ Created: Unknown - {phone}")
-    
-    except Exception as e:
-        log_message(f"     ❌ Error creating contacts: {str(e)}")
+        except Exception as e:
+            log_message(f"     ❌ Error creating contact for {phone}: {str(e)}")
     
     return contacts_created
 
@@ -749,7 +799,7 @@ async def process_zillow_contacts(prisma: Prisma) -> bool:
                 
                 # Scrape contacts
                 agent_info = await scrape_property_contacts(lead.link)
-                
+                log_message(f"   Scraped agent info: {agent_info if agent_info else 'None'}")
                 if agent_info:
                     contacts_created = await create_contacts_from_scraped_data(agent_info, lead.id, prisma)
                     total_contacts_created += contacts_created
@@ -785,6 +835,7 @@ async def main():
     parser.add_argument('--contacts-only', action='store_true', help='Only extract contacts')
     parser.add_argument('--skip-contacts', action='store_true', help='Skip contacts')
     parser.add_argument('--skip-proxy-test', action='store_true', help='Skip proxy test')
+    parser.add_argument('--zpid', nargs='+', help='Fetch a specific ZPID (can be used multiple times)')
     args = parser.parse_args()
     
     start_time = datetime.now()
@@ -799,8 +850,30 @@ async def main():
     
     try:
         async with get_prisma_client() as prisma:
+            # # Step 0: Fetch specific ZPIDs if provided
+            if args.zpid:
+                log_message("=" * 50)
+                log_message(f"STEP 0: FETCHING SPECIFIC ZPIDS: {args.zpid}")
+                log_message("=" * 50)
+                
+                proxy_url = get_random_proxy() if not args.skip_proxy_test else None
+                
+                for zpid in args.zpid:
+                    if state.is_timeout():
+                        log_message("⚠️ Timeout reached, stopping ZPID fetch.")
+                        break
+                        
+                    details = get_property_by_zpid(zpid, proxy_url)
+                    
+                    if details:
+                        # The returned dictionary needs a 'results' key for save_listing_to_db
+                        status, lead_id = await save_listing_to_db(details, prisma)
+                        log_message(f"   -> Status for {zpid}: {status}")
+                    
+                    await asyncio.sleep(random.uniform(1, 3)) # Delay between requests
+
             # Step 1: Fetch Listings
-            if not args.contacts_only:
+            if not args.contacts_only and not args.zpid: # Skip if fetching specific zpid
                 log_message("=" * 50)
                 log_message("STEP 1: FETCHING LISTINGS")
                 log_message("=" * 50)
