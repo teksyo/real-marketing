@@ -43,6 +43,9 @@ urllib3.disable_warnings()
 
 # ScraperAPI configuration
 SCRAPERAPI_KEY = os.getenv('SCRAPERAPI_KEY', '00d53552daadeff0cbdd543558c909b8')
+PEOPLE_DATALABS_API_KEY = os.getenv('PEOPLE_DATALABS_API_KEY',"2b49d393556a5192d767aa64eb3693c11ddde9eed9f62e314573dacaf41ed1da")
+ATTOM_API_KEY = os.getenv('ATTOM_API_KEY',"58085742cbc2ff94c8323c04497936f9")
+
 SCRAPERAPI_URL = "http://api.scraperapi.com"
 
 # Proxy settings for pyzill - Fixed authentication format
@@ -553,6 +556,10 @@ def extract_phone_numbers(text_content: str) -> List[str]:
     return list(phone_numbers)
 
 def extract_agent_info(soup: BeautifulSoup) -> List[Dict[str, str]]:
+    # 🧪 Save full HTML for inspection
+    with open("full_page_debug.html", "w", encoding="utf-8") as f:
+        f.write(soup.prettify())
+
     # Step 1: Find the <script> tag that contains 'listedBy'
     for script in soup.find_all("script"):
         if 'listedBy' in script.text:
@@ -560,46 +567,52 @@ def extract_agent_info(soup: BeautifulSoup) -> List[Dict[str, str]]:
             break
     else:
         return []
-    
+
+    # Save the matched <script> block
+    with open("scraped_script_debug.html", "w", encoding="utf-8") as f:
+        f.write(script_text)
+
     # Step 2: Match the escaped "listedBy" JSON block
     match = re.search(r'\\"listedBy\\":(\[.*?\])', script_text, re.DOTALL)
     if not match:
         return []
-    
-    log_message(match.group(1))  # Log the raw captured JSON for debugging
-    
-    # Step 3: Extract using regex directly on the raw string (with escaped quotes)
+
+    # Save just the listedBy JSON block
     listed_by_str = match.group(1)
-    
+    with open("listed_by_debug.json", "w", encoding="utf-8") as f:
+        f.write(listed_by_str)
+
     # Initialize variables
     agent_name = agent_phone = company = None
-    
+
     try:
-        # Extract agent name using regex (looking for escaped quotes)
+        # Extract agent name
         name_match = re.search(r'\\"id\\":\s*\\"NAME\\".*?\\"text\\":\s*\\"([^"\\]*)\\"', listed_by_str)
         if name_match:
             agent_name = name_match.group(1)
             log_message(f"Found agent name: {agent_name}")
         else:
             log_message("No agent name found in regex match")
-        
-        # Extract agent phone using regex (looking for escaped quotes)
+
+        # Extract phone
         phone_match = re.search(r'\\"id\\":\s*\\"PHONE\\".*?\\"text\\":\s*\\"([^"\\]*)\\"', listed_by_str)
         if phone_match:
             agent_phone = phone_match.group(1)
             log_message(f"Found agent phone: {agent_phone}")
         else:
             log_message("No agent phone found in regex match")
-        
-        # Extract company/broker name using regex (optional)
-        broker_match = re.search(r'\\"id\\":\s*\\"BROKER\\".*?\\"elements\\":\s*\[.*?\\"id\\":\s*\\"NAME\\".*?\\"text\\":\s*\\"([^"\\]*)\\"', listed_by_str, re.DOTALL)
+
+        # Extract broker/company
+        broker_match = re.search(
+            r'\\"id\\":\s*\\"BROKER\\".*?\\"elements\\":\s*\[.*?\\"id\\":\s*\\"NAME\\".*?\\"text\\":\s*\\"([^"\\]*)\\"',
+            listed_by_str, re.DOTALL
+        )
         if broker_match:
             company = broker_match.group(1)
             log_message(f"Found company: {company}")
         else:
             log_message("No company found in regex match")
-        
-        # Step 4: Return the contact if we have agent name and phone
+
         if agent_name and agent_phone:
             result = [{
                 "name": agent_name.strip(),
@@ -612,18 +625,17 @@ def extract_agent_info(soup: BeautifulSoup) -> List[Dict[str, str]]:
             log_message(f"Found name ({agent_name}) but no phone number")
         else:
             log_message("No name or phone found")
-        
+
         return []
-        
+
     except Exception as e:
         log_message(f"Exception in regex extraction: {str(e)}")
-        # Fallback: write debug info and return empty
         with open("json_debug.txt", "w", encoding="utf-8") as f:
-            f.write(f"Raw match: {match.group(1)}\n")
+            f.write(f"Raw match: {listed_by_str}\n")
             f.write(f"Error: {str(e)}\n")
         print("⚠️ Regex extraction error:", e)
-        return [] 
-    
+        return []
+
 def is_valid_agent_name(name: str) -> bool:
     """Check if extracted text is likely a real estate agent name"""
     if not name or len(name) < 4 or len(name) > 50:
@@ -751,6 +763,106 @@ async def create_contacts_from_scraped_data(contacts_data: List[Dict[str, any]],
     
     return contacts_created
 
+async def search_owner_by_address_pdl(address_data: Dict[str, str], api_key: str):
+    import requests
+
+    url = "https://api.peopledatalabs.com/v5/person/search"
+    headers = {
+        "Content-Type": "application/json",
+        "X-api-key": api_key
+    }
+
+    payload = {
+        "query": {
+            "bool": {
+                "filter": [
+                    { "term": { "full_name": address_data["name"] }},
+                    # { "term": { "mobile_phone": "true" }},
+                    # { "term": { "location_street_address": address_data["street"] }},
+                    # { "term": { "location_postal_code": address_data["zipcode"] }},
+                    # { "term": { "location_region": address_data["state"] }},
+                    # { "term": { "location_name": f"{address_data['city']}, {address_data['state']}" }}
+                ]
+            }
+        },
+        "size": 1,
+        "include": ["phone_numbers", "mobile_phone", "emails", "full_name", "job_company_name"]
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        log_message(f"PDL status: {response.status_code}")
+        log_message(f"PDL raw response: {response.text}")
+
+        if response.status_code == 200:
+            hits = response.json().get("data", [])
+            if hits:
+                person = hits[0]
+
+                phone_numbers = person.get("phone_numbers")
+                if isinstance(phone_numbers, list) and phone_numbers:
+                    phone = phone_numbers[0]
+                elif isinstance(person.get("mobile_phone"), str):
+                    phone = person.get("mobile_phone")
+                else:
+                    phone = None
+
+                return {
+                    "name": person.get("full_name"),
+                    "phone": phone,
+                    "company": person.get("job_company_name")
+                }
+
+            else:
+                log_message("No match found from PDL")
+                return None
+        else:
+            log_message(f"PDL API Error: {response.status_code} - {response.text}")
+            return None
+
+    except Exception as e:
+        log_message(f"Exception in PDL search: {str(e)}")
+        return None
+
+async def get_owner_from_attom(street, city, state, zip_code, api_key):
+    url = "https://api.gateway.attomdata.com/propertyapi/v1.0.0/property/detailowner"
+
+    headers = {
+        "apikey": api_key
+    }
+
+    params = {
+        "address1": street,
+        "address2": f"{city}, {state} {zip_code}"
+    }
+
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code == 200:
+        data = response.json()
+        # log_message(json.dumps(data, indent=2))  # Temporarily log entire response
+
+        try:
+            properties = data.get("property", [])
+            if not properties:
+                log_message("No properties returned.")
+                return None
+
+            prop = properties[0]
+            owner_info = prop.get("owner")
+
+            if not owner_info:
+                log_message("No 'owner' field in property.")
+                return None
+
+            return {
+                "owner_name": owner_info.get("owner1", {}).get("fullname", "N/A"),
+                "mailing_address": owner_info.get("mailingaddressoneline", "N/A")
+            }
+        except Exception as e:
+            log_message(f"Exception parsing ATTOM owner data: {str(e)}")
+            return None
+
 async def process_zillow_contacts(prisma: Prisma) -> bool:
     """Process Zillow leads without contact information"""
     log_message("📞 Starting contact extraction...")
@@ -799,7 +911,20 @@ async def process_zillow_contacts(prisma: Prisma) -> bool:
                 
                 # Scrape contacts
                 agent_info = await scrape_property_contacts(lead.link)
-                log_message(f"   Scraped agent info: {agent_info if agent_info else 'None'}")
+                # address = {
+                #     "street": lead.address, "state": lead.region.split(',')[1].strip(),
+                #     "city": lead.region.split(',')[0].strip(), "zipcode": lead.zipCode}
+                # agent_info_owner = await get_owner_from_attom(
+                #     street=address['street'], city=address["city"],
+                #     state=address["state"], zip_code=address["zipcode"],
+                #     api_key=ATTOM_API_KEY
+                # )
+                # log_message(f"Searching owner for address: {agent_info_owner}")
+                # addressPdl = {"name": agent_info_owner["owner_name"],
+                #     "street": agent_info_owner["mailing_address"], "state": lead.region.split(',')[1].strip(),
+                #     "city": lead.region.split(',')[0].strip(), "zipcode": lead.zipCode}
+                # agent_info = await search_owner_by_address_pdl(addressPdl, PEOPLE_DATALABS_API_KEY)
+                # log_message(f"   Scraped agent info: {agent_info if agent_info else 'None'}")
                 if agent_info:
                     contacts_created = await create_contacts_from_scraped_data(agent_info, lead.id, prisma)
                     total_contacts_created += contacts_created
@@ -850,40 +975,40 @@ async def main():
     
     try:
         async with get_prisma_client() as prisma:
-            # # Step 0: Fetch specific ZPIDs if provided
-            if args.zpid:
-                log_message("=" * 50)
-                log_message(f"STEP 0: FETCHING SPECIFIC ZPIDS: {args.zpid}")
-                log_message("=" * 50)
+            # # # Step 0: Fetch specific ZPIDs if provided
+            # if args.zpid:
+            #     log_message("=" * 50)
+            #     log_message(f"STEP 0: FETCHING SPECIFIC ZPIDS: {args.zpid}")
+            #     log_message("=" * 50)
                 
-                proxy_url = get_random_proxy() if not args.skip_proxy_test else None
+            #     proxy_url = get_random_proxy() if not args.skip_proxy_test else None
                 
-                for zpid in args.zpid:
-                    if state.is_timeout():
-                        log_message("⚠️ Timeout reached, stopping ZPID fetch.")
-                        break
+            #     for zpid in args.zpid:
+            #         if state.is_timeout():
+            #             log_message("⚠️ Timeout reached, stopping ZPID fetch.")
+            #             break
                         
-                    details = get_property_by_zpid(zpid, proxy_url)
+            #         details = get_property_by_zpid(zpid, proxy_url)
                     
-                    if details:
-                        # The returned dictionary needs a 'results' key for save_listing_to_db
-                        status, lead_id = await save_listing_to_db(details, prisma)
-                        log_message(f"   -> Status for {zpid}: {status}")
+            #         if details:
+            #             # The returned dictionary needs a 'results' key for save_listing_to_db
+            #             status, lead_id = await save_listing_to_db(details, prisma)
+            #             log_message(f"   -> Status for {zpid}: {status}")
                     
-                    await asyncio.sleep(random.uniform(1, 3)) # Delay between requests
+            #         await asyncio.sleep(random.uniform(1, 3)) # Delay between requests
 
-            # Step 1: Fetch Listings
-            if not args.contacts_only and not args.zpid: # Skip if fetching specific zpid
-                log_message("=" * 50)
-                log_message("STEP 1: FETCHING LISTINGS")
-                log_message("=" * 50)
+            # # Step 1: Fetch Listings
+            # if not args.contacts_only and not args.zpid: # Skip if fetching specific zpid
+            #     log_message("=" * 50)
+            #     log_message("STEP 1: FETCHING LISTINGS")
+            #     log_message("=" * 50)
                 
-                try:
-                    success_listings = await fetch_zillow_listings(prisma, args.skip_proxy_test)
-                    log_message(f"Listings: {'✅ Success' if success_listings else '❌ Failed'}")
-                except Exception as e:
-                    log_message(f"❌ Listings error: {e}")
-                    success_listings = False
+            #     try:
+            #         success_listings = await fetch_zillow_listings(prisma, args.skip_proxy_test)
+            #         log_message(f"Listings: {'✅ Success' if success_listings else '❌ Failed'}")
+            #     except Exception as e:
+            #         log_message(f"❌ Listings error: {e}")
+            #         success_listings = False
             
             # Step 2: Extract Contacts
             if not args.listings_only and not args.skip_contacts and not state.is_timeout():
