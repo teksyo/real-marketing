@@ -23,6 +23,7 @@ import aiohttp
 import gc
 import threading
 from contextlib import asynccontextmanager
+import itertools
 
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -43,8 +44,12 @@ urllib3.disable_warnings()
 
 # ScraperAPI configuration
 SCRAPERAPI_KEY = os.getenv('SCRAPERAPI_KEY', '00d53552daadeff0cbdd543558c909b8')
-PEOPLE_DATALABS_API_KEY = os.getenv('PEOPLE_DATALABS_API_KEY',"2b49d393556a5192d767aa64eb3693c11ddde9eed9f62e314573dacaf41ed1da")
-ATTOM_API_KEY = os.getenv('ATTOM_API_KEY',"58085742cbc2ff94c8323c04497936f9")
+
+RAPIDAPI_KEY = "11b08ddccamsh284e03f292010c1p161205jsnae7557d35c9a"
+HEADERS = {
+    "X-RapidAPI-Key": RAPIDAPI_KEY,
+    "X-RapidAPI-Host": "skip-tracing-working-api.p.rapidapi.com"
+}
 
 SCRAPERAPI_URL = "http://api.scraperapi.com"
 
@@ -72,7 +77,7 @@ MAX_RETRIES = 2
 # Runtime limits - Conservative for cron jobs
 MAX_LISTINGS_TO_FETCH = 20
 MAX_CONTACTS_TO_PROCESS = 8
-MAX_RUNTIME_MINUTES = 6  # Reduced for reliable cron execution
+MAX_RUNTIME_MINUTES = 180  # Reduced for reliable cron execution
 
 # Timeout settings
 REQUEST_TIMEOUT = 60
@@ -107,6 +112,15 @@ class ScraperState:
 
 # Global state instance
 state = ScraperState()
+
+# List of user agents for randomization
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:119.0) Gecko/20100101 Firefox/119.0",
+    # Add more user agents as needed
+]
 
 # ================== SIGNAL HANDLING ==================
 
@@ -265,42 +279,48 @@ async def get_prisma_client():
 # ================== LISTINGS FUNCTIONS ==================
 
 async def save_listing_to_db(listing: Dict, prisma: Prisma) -> tuple[str, Optional[int]]:
-    """Save a listing to the database and return status and lead ID"""
     try:
         if state.is_timeout():
             return "timeout", None
-            
+
         zpid = str(listing.get('zpid', ''))
         if not zpid:
             return "error", None
-            
-        # Check if listing already exists
+
         existing = await prisma.lead.find_unique(where={'zid': zpid})
-        
-        if existing:  # Record exists
+        if existing:
             return "exists", existing.id
-            
-        # Prepare listing data
+
         zip_code = listing.get('addressZipcode', '') or listing.get('zipCode', '') or 'Unknown'
         city = listing.get('addressCity', '') or 'Unknown'
         state_code = listing.get('addressState', '') or 'Unknown'
         region = f"{city}, {state_code}"
-        
-        # Skip if not in target states
+
         if state_code not in ['GA', 'LA', 'FL']:
             return "skip", None
-            
-        # Extract full name from address if available
-        full_name = None
-        if listing.get('address'):
-            # Try to extract name from address (usually in format "Owner Name's Address")
-            address_parts = listing['address'].split("'s ", 1)
-            if len(address_parts) > 1:
-                full_name = address_parts[0]
-        
+
+        address_str = listing.get('address', '')
+        street = listing.get('addressStreet', '') or address_str.split(',')[0].strip()
+
+        # Build address dict for API call
+        api_address = {
+            "street": street,
+            "city": city,
+            "state": state_code,
+            "zipcode": zip_code
+        }
+
+        # Get full name and phone from rapid API
+        # contact_info = await rapid_agent_info(api_address)
+        contact_info = None
+        full_name = contact_info["name"] if contact_info else None
+        phone = contact_info["phone"] if contact_info else None
+
         listing_data = {
             'zid': zpid,
-            'address': listing.get('address', '') or None,
+            'fullName': full_name,
+            'phoneNumber': phone,
+            'address': address_str or None,
             'price': str(listing.get('unformattedPrice', '')) or None,
             'beds': str(listing.get('beds', '')) or None,
             'link': listing.get('detailUrl', '') or None,
@@ -309,13 +329,12 @@ async def save_listing_to_db(listing: Dict, prisma: Prisma) -> tuple[str, Option
             'status': LeadStatus.NEW,
             'priority': LeadPriority.MEDIUM,
             'source': LeadSource.ZILLOW,
-            'contactFetchAttempts': 0
+            'contactFetchAttempts': 1 if contact_info else 0
         }
+
         new_lead = await prisma.lead.create(data=listing_data)
-        
-        
         return ("created", new_lead.id) if new_lead else ("timeout", None)
-        
+
     except Exception as e:
         log_message(f"Error saving listing: {str(e)}")
         return "error", None
@@ -384,78 +403,72 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
             
             # Fetch listings function
             def fetch_listings():
-                proxy_url = None
-                if proxy_working:
-                    proxy_url = get_random_proxy()
-                    log_message(f"Using proxy: {proxy_url is not None}")
-                
-                try:
-                    return pyzill.for_sale(
-                        pagination=1,
-                        search_value="",
-                        min_beds=None,
-                        max_beds=None,
-                        min_bathrooms=None,
-                        max_bathrooms=None,
-                        min_price=None,
-                        max_price=None,
-                        ne_lat=bounds["north"],
-                        ne_long=bounds["east"],
-                        sw_lat=bounds["south"],
-                        sw_long=bounds["west"],
-                        zoom_value=5,
-                        proxy_url=proxy_url
-                    )
-                except Exception as e:
-                    if proxy_url:
-                        log_message(f"⚠️  Proxy request failed: {e}")
-                        log_message("🔄 Retrying without proxy...")
-                        return pyzill.for_sale(
-                            pagination=1,
-                            search_value="",
-                            min_beds=None,
-                            max_beds=None,
-                            min_bathrooms=None,
-                            max_bathrooms=None,
-                            min_price=None,
-                            max_price=None,
-                            ne_lat=bounds["north"],
-                            ne_long=bounds["east"],
-                            sw_lat=bounds["south"],
-                            sw_long=bounds["west"],
-                            zoom_value=5,
-                            proxy_url=None
-                        )
+                session_cycle = itertools.cycle(PROXY_SESSIONS)  # Infinite rotation
+                max_attempts = len(PROXY_SESSIONS) * 2  # Try each session twice before giving up
+                page = 1
+                all_results = []
+                total_count = None
+                # Remove max_pages limit to fetch all pages
+                while True:
+                    for attempt in range(max_attempts):
+                        session = next(session_cycle)
+                        proxy_url = f"http://{session}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
+                        user_agent = random.choice(USER_AGENTS)
+                        log_message(f"Using proxy session: {session} with User-Agent: {user_agent} (page {page})")
+                        try:
+                            response = pyzill.for_sale(
+                                pagination=page,
+                                search_value=state_code,
+                                min_beds=None,
+                                max_beds=None,
+                                min_bathrooms=None,
+                                max_bathrooms=None,
+                                min_price=None,
+                                max_price=None,
+                                ne_lat=bounds["north"],
+                                ne_long=bounds["east"],
+                                sw_lat=bounds["south"],
+                                sw_long=bounds["west"],
+                                zoom_value=5,
+                                proxy_url=proxy_url
+                            )
+                            break
+                        except Exception as e:
+                            log_message(f"⚠️  Proxy session {session} failed: {e}")
+                            continue
                     else:
-                        raise
+                        log_message("❌ All proxy sessions failed for this page.")
+                        break
+
+                    results = response.get('listResults', [])
+                    log_message(f"Fetched {len(results)} listings from page {page} for {state_code}")
+                    if not results:
+                        log_message(f"No more results for {state_code} at page {page}. Stopping.")
+                        break
+                    all_results.extend(results)
+                    page += 1
+                    # Add a random delay between requests (1-3 seconds)
+                    asyncio.sleep(random.uniform(1, 3))
+                return all_results, total_count
 
             # Execute with timeout
-            response = run_sync_with_timeout(fetch_listings, OPERATION_TIMEOUT)
+            results, total_results = run_sync_with_timeout(fetch_listings, OPERATION_TIMEOUT)
             
-            if response is None:
+            if results is None:
                 log_message(f"❌ Listings fetch timed out or failed for {state_code}")
                 continue
 
-            if not response or not isinstance(response, dict):
+            if not results or not isinstance(results, list):
                 log_message(f"❌ No valid response received from Zillow for {state_code}")
                 continue
-                
-            # Extract results
-            results = []
-            for key in ['listResults', 'mapResults', 'cat1', 'results']:
-                if key in response:
-                    results = response[key]
-                    log_message(f"Found {len(results)} listings in '{key}' key")
-                    break
-                    
-            if not results:
-                log_message(f"❌ No listings found in response for {state_code}")
-                continue
+
+            # Log the number of listings fetched
+            log_message(f"Fetched {len(results)} listings for {state_code} (all pages fetched)")
             
-            # Process listings
+            # Process all fetched listings (no MAX_LISTINGS_TO_FETCH limit)
             new_count = existing_count = error_count = skipped_count = 0
             
-            for idx, result in enumerate(results[:MAX_LISTINGS_TO_FETCH]):
+            for idx, result in enumerate(results):
                 if state.is_timeout():
                     log_message(f"⚠️  Global timeout reached at listing {idx}")
                     break
@@ -499,6 +512,12 @@ async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -
             # Delay between states
             if not state.is_timeout() and state_code != target_states[-1]:
                 await asyncio.sleep(random.uniform(2, 5))
+            
+            # Print the total number of results reported by Zillow for this state
+            if total_results is not None:
+                log_message(f"🌐 Zillow reports {total_results} total results for {state_code}")
+            else:
+                log_message(f"⚠️  Could not find total result count in response for {state_code}")
         
         log_message(f"\n📊 Overall Summary:")
         log_message(f"- New leads: {total_new_count}")
@@ -763,106 +782,69 @@ async def create_contacts_from_scraped_data(contacts_data: List[Dict[str, any]],
     
     return contacts_created
 
-async def search_owner_by_address_pdl(address_data: Dict[str, str], api_key: str):
-    import requests
-
-    url = "https://api.peopledatalabs.com/v5/person/search"
-    headers = {
-        "Content-Type": "application/json",
-        "X-api-key": api_key
+async def rapid_agent_info(address: dict):
+    """
+    address = {
+        "street": "62 Kitty Hawk St",
+        "city": "Zwolle",
+        "state": "LA",
+        "zipcode": "71486"
     }
-
-    payload = {
-        "query": {
-            "bool": {
-                "filter": [
-                    { "term": { "full_name": address_data["name"] }},
-                    # { "term": { "mobile_phone": "true" }},
-                    # { "term": { "location_street_address": address_data["street"] }},
-                    # { "term": { "location_postal_code": address_data["zipcode"] }},
-                    # { "term": { "location_region": address_data["state"] }},
-                    # { "term": { "location_name": f"{address_data['city']}, {address_data['state']}" }}
-                ]
-            }
-        },
-        "size": 1,
-        "include": ["phone_numbers", "mobile_phone", "emails", "full_name", "job_company_name"]
-    }
-
+    """
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        log_message(f"PDL status: {response.status_code}")
-        log_message(f"PDL raw response: {response.text}")
+        # STEP 1: Search by address to get person ID
+        citystatezip = f"{address['city']}, {address['state']} {address['zipcode']}"
+        address_params = {
+            "street": address["street"],
+            "citystatezip": citystatezip,
+            "page": 1
+        }
 
-        if response.status_code == 200:
-            hits = response.json().get("data", [])
-            if hits:
-                person = hits[0]
-
-                phone_numbers = person.get("phone_numbers")
-                if isinstance(phone_numbers, list) and phone_numbers:
-                    phone = phone_numbers[0]
-                elif isinstance(person.get("mobile_phone"), str):
-                    phone = person.get("mobile_phone")
-                else:
-                    phone = None
-
-                return {
-                    "name": person.get("full_name"),
-                    "phone": phone,
-                    "company": person.get("job_company_name")
-                }
-
-            else:
-                log_message("No match found from PDL")
-                return None
-        else:
-            log_message(f"PDL API Error: {response.status_code} - {response.text}")
+        res1 = requests.get(
+            "https://skip-tracing-working-api.p.rapidapi.com/search/byaddress",
+            headers=HEADERS,
+            params=address_params
+        )
+        res1_data = res1.json()
+        log_message(f"🔍 Search results for address {address['street']}, {citystatezip}: {res1_data}")
+        people = res1_data.get("PeopleDetails", [])
+        if not people:
+            print("❌ No people found.")
             return None
+
+        # Take the first person's ID
+        person_id = people[0].get("Person ID")
+        if not person_id:
+            print("❌ Person ID missing.")
+            return None
+
+        # STEP 2: Fetch person detail by ID
+        res2 = requests.get(
+            "https://skip-tracing-working-api.p.rapidapi.com/search/detailsbyID",
+            headers=HEADERS,
+            params={"peo_id": person_id}
+        )
+        res2_data = res2.json()
+
+        person_details = res2_data.get("Person Details", [])
+        if not person_details:
+            print("❌ Person details not found.")
+            return None
+
+        person = person_details[0]
+        full_name = person.get("Person_name")
+        phone = person.get("Telephone")
+
+        return {
+            "name": full_name or "N/A",
+            "phone": phone or "N/A",
+            "company": None  # not present in response
+        }
 
     except Exception as e:
-        log_message(f"Exception in PDL search: {str(e)}")
+        print("❌ Error in rapid_agent_info:", e)
         return None
-
-async def get_owner_from_attom(street, city, state, zip_code, api_key):
-    url = "https://api.gateway.attomdata.com/propertyapi/v1.0.0/property/detailowner"
-
-    headers = {
-        "apikey": api_key
-    }
-
-    params = {
-        "address1": street,
-        "address2": f"{city}, {state} {zip_code}"
-    }
-
-    response = requests.get(url, headers=headers, params=params)
-
-    if response.status_code == 200:
-        data = response.json()
-        # log_message(json.dumps(data, indent=2))  # Temporarily log entire response
-
-        try:
-            properties = data.get("property", [])
-            if not properties:
-                log_message("No properties returned.")
-                return None
-
-            prop = properties[0]
-            owner_info = prop.get("owner")
-
-            if not owner_info:
-                log_message("No 'owner' field in property.")
-                return None
-
-            return {
-                "owner_name": owner_info.get("owner1", {}).get("fullname", "N/A"),
-                "mailing_address": owner_info.get("mailingaddressoneline", "N/A")
-            }
-        except Exception as e:
-            log_message(f"Exception parsing ATTOM owner data: {str(e)}")
-            return None
-
+        
 async def process_zillow_contacts(prisma: Prisma) -> bool:
     """Process Zillow leads without contact information"""
     log_message("📞 Starting contact extraction...")
@@ -874,7 +856,7 @@ async def process_zillow_contacts(prisma: Prisma) -> bool:
                 where={
                     'source': 'ZILLOW',
                     'contacts': {'none': {}},
-                    'contactFetchAttempts': {'lt': 3},
+                    'contactFetchAttempts': {'lt': 1},
                     'link': {'not': None}
                 },
                 take=MAX_CONTACTS_TO_PROCESS
@@ -911,20 +893,7 @@ async def process_zillow_contacts(prisma: Prisma) -> bool:
                 
                 # Scrape contacts
                 agent_info = await scrape_property_contacts(lead.link)
-                # address = {
-                #     "street": lead.address, "state": lead.region.split(',')[1].strip(),
-                #     "city": lead.region.split(',')[0].strip(), "zipcode": lead.zipCode}
-                # agent_info_owner = await get_owner_from_attom(
-                #     street=address['street'], city=address["city"],
-                #     state=address["state"], zip_code=address["zipcode"],
-                #     api_key=ATTOM_API_KEY
-                # )
-                # log_message(f"Searching owner for address: {agent_info_owner}")
-                # addressPdl = {"name": agent_info_owner["owner_name"],
-                #     "street": agent_info_owner["mailing_address"], "state": lead.region.split(',')[1].strip(),
-                #     "city": lead.region.split(',')[0].strip(), "zipcode": lead.zipCode}
-                # agent_info = await search_owner_by_address_pdl(addressPdl, PEOPLE_DATALABS_API_KEY)
-                # log_message(f"   Scraped agent info: {agent_info if agent_info else 'None'}")
+                
                 if agent_info:
                     contacts_created = await create_contacts_from_scraped_data(agent_info, lead.id, prisma)
                     total_contacts_created += contacts_created
@@ -976,56 +945,56 @@ async def main():
     try:
         async with get_prisma_client() as prisma:
             # # # Step 0: Fetch specific ZPIDs if provided
-            # if args.zpid:
-            #     log_message("=" * 50)
-            #     log_message(f"STEP 0: FETCHING SPECIFIC ZPIDS: {args.zpid}")
-            #     log_message("=" * 50)
+            if args.zpid:
+                log_message("=" * 50)
+                log_message(f"STEP 0: FETCHING SPECIFIC ZPIDS: {args.zpid}")
+                log_message("=" * 50)
                 
-            #     proxy_url = get_random_proxy() if not args.skip_proxy_test else None
+                proxy_url = get_random_proxy() if not args.skip_proxy_test else None
                 
-            #     for zpid in args.zpid:
-            #         if state.is_timeout():
-            #             log_message("⚠️ Timeout reached, stopping ZPID fetch.")
-            #             break
+                for zpid in args.zpid:
+                    if state.is_timeout():
+                        log_message("⚠️ Timeout reached, stopping ZPID fetch.")
+                        break
                         
-            #         details = get_property_by_zpid(zpid, proxy_url)
+                    details = get_property_by_zpid(zpid, proxy_url)
                     
-            #         if details:
-            #             # The returned dictionary needs a 'results' key for save_listing_to_db
-            #             status, lead_id = await save_listing_to_db(details, prisma)
-            #             log_message(f"   -> Status for {zpid}: {status}")
+                    if details:
+                        # The returned dictionary needs a 'results' key for save_listing_to_db
+                        status, lead_id = await save_listing_to_db(details, prisma)
+                        log_message(f"   -> Status for {zpid}: {status}")
                     
-            #         await asyncio.sleep(random.uniform(1, 3)) # Delay between requests
+                    await asyncio.sleep(random.uniform(1, 3)) # Delay between requests
 
-            # # Step 1: Fetch Listings
-            # if not args.contacts_only and not args.zpid: # Skip if fetching specific zpid
-            #     log_message("=" * 50)
-            #     log_message("STEP 1: FETCHING LISTINGS")
-            #     log_message("=" * 50)
+            # Step 1: Fetch Listings
+            if not args.contacts_only and not args.zpid: # Skip if fetching specific zpid
+                log_message("=" * 50)
+                log_message("STEP 1: FETCHING LISTINGS")
+                log_message("=" * 50)
                 
-            #     try:
-            #         success_listings = await fetch_zillow_listings(prisma, args.skip_proxy_test)
-            #         log_message(f"Listings: {'✅ Success' if success_listings else '❌ Failed'}")
-            #     except Exception as e:
-            #         log_message(f"❌ Listings error: {e}")
-            #         success_listings = False
+                try:
+                    success_listings = await fetch_zillow_listings(prisma, args.skip_proxy_test)
+                    log_message(f"Listings: {'✅ Success' if success_listings else '❌ Failed'}")
+                except Exception as e:
+                    log_message(f"❌ Listings error: {e}")
+                    success_listings = False
             
             # Step 2: Extract Contacts
-            if not args.listings_only and not args.skip_contacts and not state.is_timeout():
-                log_message("=" * 50)
-                log_message("STEP 2: EXTRACTING CONTACTS")
-                log_message("=" * 50)
+            # if not args.listings_only and not args.skip_contacts and not state.is_timeout():
+            #     log_message("=" * 50)
+            #     log_message("STEP 2: EXTRACTING CONTACTS")
+            #     log_message("=" * 50)
                 
-                if not SCRAPERAPI_KEY:
-                    log_message("❌ SCRAPERAPI_KEY not set, skipping contacts")
-                    success_contacts = False
-                else:
-                    try:
-                        success_contacts = await process_zillow_contacts(prisma)
-                        log_message(f"Contacts: {'✅ Success' if success_contacts else '❌ Failed'}")
-                    except Exception as e:
-                        log_message(f"❌ Contacts error: {e}")
-                        success_contacts = False
+            #     if not SCRAPERAPI_KEY:
+            #         log_message("❌ SCRAPERAPI_KEY not set, skipping contacts")
+            #         success_contacts = False
+            #     else:
+            #         try:
+            #             success_contacts = await process_zillow_contacts(prisma)
+            #             log_message(f"Contacts: {'✅ Success' if success_contacts else '❌ Failed'}")
+            #         except Exception as e:
+            #             log_message(f"❌ Contacts error: {e}")
+            #             success_contacts = False
             
             # Final summary
             runtime = datetime.now() - start_time
