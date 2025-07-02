@@ -24,6 +24,7 @@ import gc
 import threading
 from contextlib import asynccontextmanager
 import itertools
+import csv
 
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -175,7 +176,14 @@ def ensure_data_directory():
         DATA_DIR.mkdir(exist_ok=True)
     except Exception as e:
         log_message(f"⚠️  Could not create data directory: {e}")
-
+def get_us_map_bounds() -> Dict:
+    """Get map bounds for continental US"""
+    return {
+        "west": -124.848974,
+        "east": -66.885444,
+        "south": 24.396308,
+        "north": 49.384358
+    }
 def get_state_bounds(state_code: str) -> Dict:
     """Get map bounds for a specific state"""
     state_bounds = {
@@ -200,15 +208,15 @@ def get_state_bounds(state_code: str) -> Dict:
     }
     return state_bounds.get(state_code.upper())
 
-def get_us_map_bounds() -> Dict:
-    """Get combined map bounds for GA, LA, and FL"""
-    # Combine bounds to cover all three states
-    return {
-        "west": -94.043147,  # Westernmost point (Louisiana)
-        "east": -79.974306,  # Easternmost point (Florida)
-        "south": 24.396308,  # Southernmost point (Florida)
-        "north": 35.000659   # Northernmost point (Georgia)
-    }
+# def get_us_map_bounds() -> Dict:
+#     """Get combined map bounds for GA, LA, and FL"""
+#     # Combine bounds to cover all three states
+#     return {
+#         "west": -94.043147,  # Westernmost point (Louisiana)
+#         "east": -79.974306,  # Easternmost point (Florida)
+#         "south": 24.396308,  # Southernmost point (Florida)
+#         "north": 35.000659   # Northernmost point (Georgia)
+#     }
 
 def get_random_proxy():
     """Get a random proxy session for pyzill with proper authentication"""
@@ -328,7 +336,7 @@ async def save_listing_to_db(listing: Dict, prisma: Prisma) -> tuple[str, Option
             'region': region,
             'status': LeadStatus.NEW,
             'priority': LeadPriority.MEDIUM,
-            'source': LeadSource.ZILLOW,
+            'source': LeadSource.OCPAWEB,
             'contactFetchAttempts': 1 if contact_info else 0
         }
 
@@ -360,175 +368,88 @@ def get_property_by_zpid(zpid: str, proxy_url: Optional[str] = None) -> Optional
         log_message(f"❌ Error fetching property by ZPID {zpid}: {e}")
         return None
 
+async def import_properties_from_csv(csv_path: str, prisma: Prisma):
+    log_message(f"📥 Importing properties from CSV: {csv_path}")
+    with open(csv_path, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile, delimiter=',')
+        # Fix: Strip whitespace from fieldnames
+        reader.fieldnames = [fn.strip() for fn in reader.fieldnames]
+        imported = 0
+        skipped = 0
+        for row in reader:
+            # Extract relevant fields
+            parcel_id = row.get('Parcel ID', '').strip()
+            owner_name = row.get('Owner Name(s)', '').strip()
+            address = row.get('Property Address', '').strip()
+            city = row.get('Property City', '').strip()
+            state_code = row.get('Property State', '').strip()
+            zip_code = row.get('Property Zip', '').strip()
+            link = row.get('Link', '').strip()
+            region = f"{city}, {state_code}"
+            beds = row.get('Bedrooms', '').strip() or None
+            # baths = row.get('Bathrooms', '').strip() or None
+            price = row.get('Just Value', '').strip() or None
+
+            # Skip if required fields are missing
+            if not address or not parcel_id:
+                log_message(f"⚠️ Skipping row with missing address or parcel ID: {row}")
+                skipped += 1
+                continue
+
+            # Check if address or parcel_id already exists in DB
+            existing = await prisma.lead.find_first(where={
+                'OR': [
+                    {'address': address},
+                    {'zid': parcel_id}
+                ]
+            })
+            if existing:
+                log_message(f"⏩ Skipping duplicate: {address} (Parcel ID: {parcel_id})")
+                skipped += 1
+                continue
+
+            # Prepare data for DB
+            listing_data = {
+                'zid': parcel_id,
+                'fullName': owner_name,
+                'phoneNumber': None,
+                'address': address,
+                'price': price,
+                'beds': beds,
+                # 'baths': baths,
+                'link': link,
+                'zipCode': zip_code,
+                'region': region,
+                'status': LeadStatus.NEW,
+                'priority': LeadPriority.MEDIUM,
+                'source': LeadSource.OCPAWEB,
+                'contactFetchAttempts': 0
+            }
+            try:
+                new_lead = await prisma.lead.create(data=listing_data)
+                imported += 1
+                log_message(f"✅ Imported: {address} (Parcel ID: {parcel_id})")
+            except Exception as e:
+                log_message(f"❌ Error importing {address}: {e}")
+                skipped += 1
+        log_message(f"📊 Import complete: {imported} imported, {skipped} skipped.")
+
 async def fetch_zillow_listings(prisma: Prisma, skip_proxy_test: bool = False) -> bool:
-    """Fetch listings from Zillow using pyzill"""
-    log_message("🏠 Starting Zillow listings fetch...")
-    
-    try:
-        if state.is_timeout():
-            log_message("⚠️  Global timeout reached, skipping listings")
-            return False
-        
-        # Test proxy connection unless skipped
-        proxy_working = False
-        if not skip_proxy_test:
-            proxy_working = run_sync_with_timeout(test_proxy_connection, 20)
-            if proxy_working is None:
-                log_message("❌ Proxy test timed out")
-            elif not proxy_working:
-                log_message("⚠️  Proxy test failed, will try without proxy")
-        else:
-            log_message("⚠️  Skipping proxy test")
-            proxy_working = True  # Assume it works
-        
-        # Target states
-        target_states = ['GA', 'LA', 'FL']
-        total_new_count = 0
-        total_existing_count = 0
-        total_error_count = 0
-        total_skipped_count = 0
-        
-        # Fetch listings for each state
-        for state_code in target_states:
-            if state.is_timeout():
-                log_message(f"⚠️  Global timeout reached, stopping at state {state_code}")
-                break
-                
-            log_message(f"\n📍 Fetching listings for {state_code}...")
-            bounds = get_state_bounds(state_code)
-            
-            if not bounds:
-                log_message(f"❌ No bounds found for state {state_code}")
-                continue
-            
-            # Fetch listings function
-            def fetch_listings():
-                session_cycle = itertools.cycle(PROXY_SESSIONS)  # Infinite rotation
-                max_attempts = len(PROXY_SESSIONS) * 2  # Try each session twice before giving up
-                page = 1
-                all_results = []
-                total_count = None
-                # Remove max_pages limit to fetch all pages
-                while True:
-                    for attempt in range(max_attempts):
-                        session = next(session_cycle)
-                        proxy_url = f"http://{session}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
-                        user_agent = random.choice(USER_AGENTS)
-                        log_message(f"Using proxy session: {session} with User-Agent: {user_agent} (page {page})")
-                        try:
-                            response = pyzill.for_sale(
-                                pagination=page,
-                                search_value=state_code,
-                                min_beds=None,
-                                max_beds=None,
-                                min_bathrooms=None,
-                                max_bathrooms=None,
-                                min_price=None,
-                                max_price=None,
-                                ne_lat=bounds["north"],
-                                ne_long=bounds["east"],
-                                sw_lat=bounds["south"],
-                                sw_long=bounds["west"],
-                                zoom_value=5,
-                                proxy_url=proxy_url
-                            )
-                            break
-                        except Exception as e:
-                            log_message(f"⚠️  Proxy session {session} failed: {e}")
-                            continue
-                    else:
-                        log_message("❌ All proxy sessions failed for this page.")
-                        break
-
-                    results = response.get('listResults', [])
-                    log_message(f"Fetched {len(results)} listings from page {page} for {state_code}")
-                    if not results:
-                        log_message(f"No more results for {state_code} at page {page}. Stopping.")
-                        break
-                    all_results.extend(results)
-                    page += 1
-                    # Add a random delay between requests (1-3 seconds)
-                    asyncio.sleep(random.uniform(1, 3))
-                return all_results, total_count
-
-            # Execute with timeout
-            results, total_results = run_sync_with_timeout(fetch_listings, OPERATION_TIMEOUT)
-            
-            if results is None:
-                log_message(f"❌ Listings fetch timed out or failed for {state_code}")
-                continue
-
-            if not results or not isinstance(results, list):
-                log_message(f"❌ No valid response received from Zillow for {state_code}")
-                continue
-
-            # Log the number of listings fetched
-            log_message(f"Fetched {len(results)} listings for {state_code} (all pages fetched)")
-            
-            # Process all fetched listings (no MAX_LISTINGS_TO_FETCH limit)
-            new_count = existing_count = error_count = skipped_count = 0
-            
-            for idx, result in enumerate(results):
-                if state.is_timeout():
-                    log_message(f"⚠️  Global timeout reached at listing {idx}")
-                    break
-   
-                try:
-                    if not isinstance(result, dict):
-                        error_count += 1
-                        continue
-                    
-                    status, lead_id = await save_listing_to_db(result, prisma)
-                    
-                    if status == "created":
-                        new_count += 1
-                        log_message(f"✅ Created listing {idx+1}: ID {lead_id}")
-                    elif status == "exists":
-                        existing_count += 1
-                    elif status == "timeout":
-                        error_count += 1
-                        break
-                    elif status == "skip":
-                        skipped_count += 1
-                    else:
-                        error_count += 1
-                        
-                except Exception as e:
-                    log_message(f"Error processing listing {idx}: {str(e)}")
-                    error_count += 1
-                
-                # Small delay between listings
-                if idx < len(results) - 1 and not state.is_timeout():
-                    await asyncio.sleep(random.uniform(0.2, 0.8))
-            
-            log_message(f"\n📊 {state_code} Summary: {new_count} new, {existing_count} existing, {error_count} errors, {skipped_count} skipped")
-            
-            # Update totals
-            total_new_count += new_count
-            total_existing_count += existing_count
-            total_error_count += error_count
-            total_skipped_count += skipped_count
-            
-            # Delay between states
-            if not state.is_timeout() and state_code != target_states[-1]:
-                await asyncio.sleep(random.uniform(2, 5))
-            
-            # Print the total number of results reported by Zillow for this state
-            if total_results is not None:
-                log_message(f"🌐 Zillow reports {total_results} total results for {state_code}")
-            else:
-                log_message(f"⚠️  Could not find total result count in response for {state_code}")
-        
-        log_message(f"\n📊 Overall Summary:")
-        log_message(f"- New leads: {total_new_count}")
-        log_message(f"- Existing leads: {total_existing_count}")
-        log_message(f"- Errors: {total_error_count}")
-        log_message(f"- Skipped (out of state): {total_skipped_count}")
-        return True
-                
-    except Exception as e:
-        log_message(f"❌ Error fetching listings: {str(e)}")
-        return False
+    log_message("🏠 Starting Zillow listings fetch (DISABLED, using CSV import)...")
+    # --- CSV Import Logic ---
+    csv_path = "SearchResultsExport-new.csv"  # <-- Set your CSV file path here
+    await import_properties_from_csv(csv_path, prisma)
+    return True
+    # --- End CSV Import Logic ---
+    # --- Zillow Scraping Logic (commented out) ---
+    # try:
+    #     if state.is_timeout():
+    #         log_message("⚠️  Global timeout reached, skipping listings")
+    #         return False
+    #     # ... (rest of Zillow scraping logic here) ...
+    # except Exception as e:
+    #     log_message(f"❌ Error fetching listings: {str(e)}")
+    #     return False
 
 # ================== CONTACT FUNCTIONS ==================
 
