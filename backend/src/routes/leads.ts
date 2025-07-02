@@ -71,7 +71,11 @@ router.get(
       let where: any = {
         AND: [
           {
-            OR: [{ source: "ZILLOW" }, { createdById: user.id }],
+            OR: [
+              { source: "ZILLOW" },
+              { source: "OCPAWEB" },
+              { createdById: user.id },
+            ],
           },
           regionFilter, // enforce region restriction at base level
         ],
@@ -79,8 +83,8 @@ router.get(
 
       // If filtering by specific source
       if (source) {
-        if (source === "ZILLOW") {
-          where.AND[0] = { source: "ZILLOW" };
+        if (source === "ZILLOW" || source === "OCPAWEB") {
+          where.AND[0] = { source: source };
         } else {
           where.AND[0] = {
             source: source,

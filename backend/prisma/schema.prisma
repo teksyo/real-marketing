@@ -25,6 +25,8 @@ model User {
 model Lead {
   id                   Int               @id @default(autoincrement())
   address              String?
+  fullName             String?
+  phoneNumber          String?
   price                String?
   beds                 String?
   link                 String?
@@ -181,6 +183,7 @@ enum LeadPriority {
 
 enum LeadSource {
   ZILLOW
+  OCPAWEB
   MANUAL
   REFERRAL
   WEBSITE

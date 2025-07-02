@@ -76,7 +76,7 @@ export default function Dashboard() {
   // Fetch lead management statistics
   const fetchLeadStats = async () => {
     try {
-      const response = await leadService.getLeads({ limit: 1000 }); // Get all leads for stats
+      const response = await leadService.getLeads({ limit: 100000 }); // Get all leads for stats
       const regionRes = await apiFetch(`${API_BASE_URL}/api/auth/users/me`, {
         method: "GET",
       });
@@ -260,8 +260,8 @@ export default function Dashboard() {
               <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
                 {region === "NO" ? (
                   <p className="text-sm text-blue-800">
-                    <strong>Information:</strong> You don't have any assigned
-                    region.
+                    <strong>Information:</strong> You don&apos;t have any
+                    assigned region.
                   </p>
                 ) : (
                   <>
